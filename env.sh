@@ -1,541 +1,952 @@
+#!/bin/bash
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-# Setup a Java project environment with environment variables, project files
+# Configure Java project environment with environment variables, project files
 # and functions supporting the project build process:
 # \\
 # Environment variables:
-#  - PROJECT_PATH               ; path to git project (to wipe after cd-out)
 #  - CLASSPATH, MODULEPATH      ; used by Java compiler and JVM
-#  - JDK_JAVAC_OPTIONS          ; used by the Java compiler
-#  - JDK_JAVADOC_OPTIONS        ; used by the Javadoc compiler
-#  - JUNIT_CLASSPATH            ; used by the JUnit test runner
-#  - JUNIT_OPTIONS              ; used by the JUnit test runner
-#  - JACOCO_AGENT               ; JVM jacoco agent option for code coverage
+#  - JDK_JAVAC_OPTIONS          ; flags for the Java compiler
+#  - JDK_JAVADOC_OPTIONS        ; flags for the Javadoc compiler
+#  - JAR_PACKAGE_LIBS           ; libraries to package with jar-file
+#  - JUNIT_CLASSPATH            ; CLASSPATH used by the JUnit test runner
+#  - JUNIT_OPTIONS              ; flags for the JUnit test runner
+#  - JACOCO_AGENT_OPTIONS       ; JVM jacoco agent options (code coverage)
 # \\
-# Project files for VSCode and eclipse IDE:
+# Project files created for VSCode and eclipse IDE, 'libs' link:
+#  - libs -> <path-to-libs>     ; link created to 'libs' directory
 #  - .classpath, .project       ; used to set up the VSCode Java extension
-#  - in .vscode: .classpath, .modulepath, .sources  ; for Java Code Runner
+#  - .coderunner_launch         ; VS Code Java Code Runner launch file
 # 
 # Executable functions:
 # \\
-#  - show [cmd1, cmd2...]       ; show build commands
+#  - show cmd [args] cmd [args] ...         ; show commands
 # 
-#  - mk [cmd1, cmd2...] [args]  ; execute build commands
+#  - mk [--show] cmd [args] cmd [args] ...  ; execute commands
 # 
-#  - wipe [--all|-a|-la]        ; unset project env variables and functions
+#  - wipe [--all|-a]            ; unset project env variables and functions
 #                               ; --all|-a: including project files
-#                               ; -la: project files and 'libs' link or folder
-# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-# VSCode commands:
-#  - build: Ctrl-Shift-B
-#  - run:   Ctrl-Alt-N
-#  - clean Java Language Server Workspace: Ctrl-Shift-P
+# Commands:
+#  - build                      ; perform the build process with stages:
+#                               ; - clean compile compile-tests run-tests package
+#  - clean                      ; remove files created during the build process
+#  - compile, compile-tests     ; compile sources, unit tests
+#  - run, run-tests             ; run the program, run unit tests
+#  - coverage, coverage-report  ; record code coverage, create coverage report
+#  - package|jar [--package-libs|--fat-jar] ; package compiled code into .jar
+#  - run-jar                    ; run the packaged .jar
+#  - javadoc|javadocs|docs|doc  ; create Javadoc
 # 
-# VSCode project cache:
-#  - Windows: C:/Users/<USER>/AppData/Roaming/Code/User/workspaceStorage
-#  - MacOS:   ~/Library/Application Support/Code/User/workspaceStorage
+# Usage:
+#  - source env.sh [-v] [-e]    ; -v verbose show discovered assets
+#                               ; -e show values of environment variables
+# Tests:
+#  - mk build; cat target/resources/META-INF/MANIFEST.MF; mk package --package-libs
+#  - mk run run-jar run; mk javadoc coverage coverage-report run
+#  - cat target/resources/META-INF/MANIFEST.MF; ls -la target; mk run run-jar
 # 
-# VSCode installation paths:
-#  - Windows: C:/Users/<User>/AppData/Local/Programs/Microsoft\ VS\ Code/bin
-#  - MacOS:   /Applications/Visual\ Studio\ Code.app/Contents/Resources/app/bin
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # Revision information:
-# @version: 1.0.8
+# @version: 1.3.0
 # @author: sgraupner
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
-# the following segment disables zsh to output ANSI escape characters in sub-
-# processes such as in: wc $(find tmp -name '*.py') or colors="${colors:3}".
-# setopt no_match: disables 'no matches found:' message in zsh.
-type setopt 2>/dev/null | grep builtin >/dev/null
-[ $? = 0 ] && \
-    trap "" DEBUG && setopt no_nomatch
+# Disables zsh to output ANSI escape characters in sub-processes: $(find ...)
+# and disable 'no matches found:' message with 'setopt no_match' in zsh.
+[ "$(type setopt 2>/dev/null)" ] && is_zsh=true && setopt no_nomatch
 
-# global associative array with common values
 declare -gA P=(
-    [src]="src"
-    [tests]="tests"
-    [res]="resources"
-    [manifest]="resources/META-INF/MANIFEST.MF"
-    [lib]="libs"
-    [lib-repo]="git clone -b main --single-branch https://github.com/sgra64/gitmodule-libs-jars"
-    [target]="bin"
-    [classes]="bin/classes"
-    [test-classes]="bin/test-classes"
-    [test-runner]="junit-platform-console-standalone-1.9.2.jar"
-    [module]="se1.bestellsystem"
-    [run]="application.Application"
-    [log-dir]="logs"
-    [doc-dir]="docs"
-    [cov-dir]="coverage"
-    [env-script]=".env/env.sh"
-    [jar]="bin/application-1.0.0-SNAPSHOT.jar"
+    # general assets
+    [pdir]="."                  # relative path to project directory
+    [src]="src/main"            # Java source code, probed for existence
+    [tests]="src/tests"         # Java unit tests, probed for existence
+    [res]="src/resources"       # none-Java sources, config files etc., probed for existence
+    [manifest]="META-INF/MANIFEST.MF"
+    [libs]="libs"               # located and created, if not exists
+    [libs-search]=".. ../.. ../../.. branches ../branches"
+    [module]=""                 # module name from 'module-info.java'
+    [module-info]="src/main/module-info.java"
+    [module-path]=""            # modules found in 'libs'
+    [main]="application.Application"    # default main class to run
     # 
-    [is-zsh]=$(type setopt 2>/dev/null)
+    # defined assets
+    [target]="target"           # compiled, copied and generated code
+    [target-cls]="target/classes"           # compiled code (.class-files)
+    [target-tests]="target/test-classes"    # compiled test classes
+    [target-res]="target/resources"         # none-Java source assets copied from P[res]
+    [target-jar]="target/application-1.0.0-SNAPSHOT.jar"    # packaged application as fat .jar
+    # 
+    [logs]="logs"               # directory to store log files
+    [docs]="target/docs"        # directory the javadoc compiler stores javadocs
+    [cov]="target/coverage"                 # directory for jacoco.agent to store coverage files
+    [cov-file]="target/coverage/jacoco.exec"    # file created by the jacoco.agent
+    [cov-report]="target/coverage-report"       # output directory for coverage report (HTML)
+    # 
+    # discovered assets
+    [libs-rp]=""                # libs relative real path (traced links)
+    [libs-rpup]=""              # libs relative real path one level up (trimmed '/libs')
+    [libs-abs]=""               # libs absolute path
+    [cov-agent]=""              # jacoco code coverage agent, e.g. 'libs/jacoco/jacocoagent.jar'
+    [cov-report-gen]=""         # jacoco report generator, e.g. 'libs/jacoco/jacococli.jar'
+    [jars]=""                   # .jar files found in libs, used by CLASSPATH
+    [junit-jars]=""             # .jar files from libs for JUnit testing, used by JUNIT_CLASSPATH
+    [junit-runner]=""           # .jar file found in libs for the JUnit test runner
+    # 
+    [script]="${BASH_SOURCE[0]}"    # name of this script file
+    [is-zsh]="$is_zsh"          # empty if executing shell is not zsh
     [is-win]=$([[ "$(uname)" =~ (CYGWIN|MINGW) ]] && echo true)
-    [created-env]=""
-    [created-files]=""
-    [created-functions]=""
+    [sep]=":"                   # seperator used in CLASSPATH, MODULEPATH
+    [ra-opt]="-ra"              # zsh: read -rA arr <<< $str vs. -ra (bash)
+    [has-realpath]=$(type realpath 1>/dev/null 2>/dev/null; [ $? -eq 0 ] && echo true)
+    [has-cygpath]=$(type cygpath 1>/dev/null 2>/dev/null; [ $? -eq 0 ] && echo true)
 )
+if [ "$is_zsh" ]; then
+    P[script]="./${(%):-%x}"    # obtain name of this script and overwrite P[script]
+    P[script-path]="${${P[script]}%/*}"
+    P[ra-opt]="-rA"
+else
+    script_=${P[script]}
+    P[script-path]="${script_%/*}"
+fi
+# 
+# return codes from functions
+RC_HELP_MSG=100                 # parse_args found -h, --help flag to print help message
+RC_NOTHING_CREATED=200          # configure_env found that nothing was created
+# 
+# arrays to log created assets
+created_vars=(); created_files=(); created_funcs=()
 
-function setup() {
+
+function discover_env() {
+    [ "${P[is-win]}" ] && P[sep]=';'
     # 
-    [ ! -d src -o ! -d .git ] && echo "must run in main project directory" && return 1
+    # [ $(is_project_directory $p) ] && \
+    #     echo "must run in project directory" && \
+    #     return 1
     # 
-    [ -z "$PROJECT_PATH" ] && \
-        export PROJECT_PATH="$(pwd)" && \
-        created env "PROJECT_PATH: \"${PROJECT_PATH}\""
+    for p in ${P[script-path]} ${P[script-path]}/.. ; do
+        [ $(is_project_directory $p) ] && P[pdir]="$(realpath_ --relative-to=. $p)" && break
+    done
     # 
-    local lib="${P[lib]}"
-    if [ ! -d "$lib" ]; then
-        local search_dirs=( .. ../.. branches ../branches )
-        for p in ${search_dirs[@]}; do
-            local p="$p/$lib"
-            if [ -d "$p" ]; then
-                # MinGW (GitBash) requires MSYS setting for symlinks
-                # https://www.joshkel.com/2018/01/18/symlinks-in-windows/
-                [ "${P[is-win]}" ] && export MSYS="winsymlinks:nativestrict"
-                ln -s "$p" "$lib"
-                created file ln -s "$p" "$lib"
-                break
-            fi
-        done
-        # if 'libs' could not be linked, check-out 'libs' branch from git repository
-        [ ! -d "$lib" ] && \
-            eval ${P[lib-repo]} "$lib" && \
-            created file "${P[lib-repo]}" "$lib"
+    # define offset path 'pd' if script runs from other than project folder
+    [ "${P[pdir]}" = "." ] && P[pdir]="" || local pd="${P[pdir]}/"
+    # 
+    # locate 'libs' directory and attempt to link into project directory
+    if [ ! -e "$pd${P[libs]}" ]; then
+        local libs_path=$(locate_libs)
+        if [ "$libs_path" ]; then
+            # MinGW (GitBash) requires MSYS setting for symlinks
+            # https://www.joshkel.com/2018/01/18/symlinks-in-windows/
+            [ "${P[is-win]}" ] && export MSYS="winsymlinks:nativestrict"
+            # 
+            ln -s "$libs_path" "$pd${P[libs]}"
+            created_files+=("ln -s $libs_path $pd${P[libs]}")
+        fi
     fi
-
-    if [ "$1" = "--setup-classpath" ]; then
-        setup_classpath
-        unset -f setup_classpath template
+    # 
+    local main="${P[main]}"
+    main=${main//./\//}".java"       # replace '.' with '/' in main class
+    # 
+    [ ! -d "$pd${P[src]}" ] && P[src]=""
+    [ ! -f "$pd${P[src]}/$main" ] && P[main]=""
+    [ ! -d "$pd${P[tests]}" ] && P[tests]=""
+    [ ! -d "$pd${P[res]}" ] && P[res]="" && P[target-res]=""
+    [ ! -f "$pd${P[res]}/${P[manifest]}" ] && P[manifest]=""
+    # 
+    # parse module name from file 'module-info.java'
+    [ -f "$pd${P[module-info]}" ] && \
+        P[module]=$(parse_module_name $pd${P[module-info]}) || P[module-info]=""
+    # 
+    if [ -d "$pd${P[libs]}" ]; then
+        # 
+        # determine absolute path to 'libs' tracing links
+        [ "${P[is-win]}" ] && P[libs-abs]=$(cygpath_ -wa "$pd${P[libs]}") || P[libs-abs]=$(realpath_ "$pd${P[libs]}")
+        # 
+        # determine relative path to 'libs' tracing links
+        [ "$pd" ] && local locd="$pd" || local locd="."
+        P[libs-rp]=$(realpath_ --relative-to="$locd" "$pd${P[libs]}")
+        # 
+        # determine relative path to 'libs' one level up ('/libs' removed)
+        # rlibs=${rlibs%libs}; rlibs=${rlibs%/}   # remove trailing 'libs' and then '/' (two steps for 'libs')
+        # [ -z "$rlibs" ] && rlibs="."
+        local libs_up=$(dirname "${P[libs-rp]}")
+        P[libs-rpup]="$libs_up"
+        # 
+        local sep1=""; local sep2=""; local sep3=""
+        [ "${P[module]}" ] && P[module-path]="${P[target-cls]}"; local has_mod=""
+        # 
+        P[pckg-libs]=""
+        IFS=$'\n' dirs=($([ "$pd" ] && builtin cd "$pd"; find "${P[libs-rp]}" -type d -not -path "*.git*"))
+        for dir in "${dirs[@]}"; do
+            jars=($(ls $dir/*.jar 2>/dev/null))
+            for jar in "${jars[@]}"; do
+                case "$jar" in
+                */junit-platform-console-standalone*.jar) P[junit-runner]="$jar"; local addjunitjar="true" ;;
+                */jacocoagent*.jar) P[cov-agent]="$jar"; local addjunitjar="true" ;;
+                */jacococli*.jar) P[cov-report-gen]="$jar"; local addjunitjar="true" ;;
+                */junit/junit-jupiter-api*) local addjar2="true" ;;
+                */junit/*) ;;
+                */jacoco/*) local addjunitjar="true"; has_mod="true" ;;
+                *) local addjar="true" ;;
+                esac
+                # 
+                # ${jar:${#libs_up}+1}
+                if [ "$addjar" -o "$addjar2" ]; then
+                    P[jars]+="$sep1$jar" && sep1="${P[sep]}" && has_mod="true"
+                    if [ "$libs_up" = "." ]; then 
+                        P[pckg-libs]+="$sep3-C $libs_up $jar" && sep3=" "
+                    else
+                        P[pckg-libs]+="$sep3-C $libs_up ${jar:${#libs_up}+1}" && sep3=" "
+                    fi
+                fi
+                # 
+                [ "$addjar" -o "$addjunitjar" ] &&
+                    P[junit-jars]+="$sep2$jar" && sep2="${P[sep]}"
+                # 
+                addjar=""; addjar2=""; addjunitjar=""
+            done
+            # 
+            [ "${P[module]}" -a "$has_mod" ] && P[module-path]+="${P[sep]}$dir"; has_mod=""
+            # 
+        done; unset IFS
+        # 
+    else
+        echo "cannot find \"${P[libs]}\" directory"
     fi
-
-    [ -z "$JDK_JAVAC_OPTIONS" ] &&
-        export JDK_JAVAC_OPTIONS="-Xlint:-options -Xlint:-module -d "${P[classes]}" --module-path \"$MODULEPATH\"" && \
-        created env JDK_JAVAC_OPTIONS
-
-    [ -z "$JDK_JAVADOC_OPTIONS" ] && local jdoc="--source-path "${P[src]}" -d "${P[doc-dir]} && \
-        jdoc+=" --module-path \"$MODULEPATH\"" && \
-        jdoc+=" -version -author -Xdoclint:-missing" && \
-        jdoc+=" -noqualifier \"java.*:application.*:datamodel.*:system.*\"" && \
-        export JDK_JAVADOC_OPTIONS="$jdoc" && \
-        created env JDK_JAVADOC_OPTIONS
-
-    [ -z "$JUNIT_OPTIONS" ] &&
-        export JUNIT_OPTIONS="--details-theme=unicode" && \
-        created env JUNIT_OPTIONS
-
-    [ -z "$JACOCO_AGENT" ] &&
-        agent_jar=$(tr ';' '\n' <<< $JUNIT_CLASSPATH | grep 'jacocoagent.jar') && \
-        export JACOCO_AGENT="-javaagent:"$agent_jar"=output=file,destfile="${P[cov-dir]}"/jacoco.exec" && \
-        created env JACOCO_AGENT
-    # 
-    [ "${P[is-zsh]}" ] && \
-        trap "echo -ne '\e[m'" DEBUG    # reset formatting after command + ENTER
-    # 
-    created show
-    # 
     return 0
 }
 
-function created() {
-    case "$1" in
-    env)        shift; local args="$@"; P[created-env]+="$args@@" ;;
-    file)       shift; local args="$@"; P[created-files]+="$args@@" ;;
-    function)   shift; local args="$@"; P[created-functions]+="$args@@" ;;
-    show)
-        [ "${P[created-env]}" ] && \
-            echo " - created environment variables:" && \
-            sed -e 's/@@/\n/g' <<< ${P[created-env]} | sed -e 's/^.*$/    - &/' -e '$d'
+function configure_env() {
+    [ "${P[pdir]}" ] && local pd="${P[pdir]}/"
+    local sep="${P[sep]}"
+    # 
+    if [ -z "$CLASSPATH" ]; then
+        local cp="${P[target-cls]}"
+        # iterate over ${P[sep]}-separated string that works for bash and zsh
+        IFS='|'; for jar in ${P[target-res]} $(tr "${P[sep]}" '|' <<< ${P[jars]}); do
+            cp+="$sep$jar"
+        done; unset IFS
+        export CLASSPATH="$cp"; created_vars+=(CLASSPATH)
+    fi
+    if [ -z "$MODULEPATH" -a "${P[module-path]}" ]; then
+        export MODULEPATH="${P[module-path]}"; created_vars+=(MODULEPATH)
+    fi
+    if [ -z "$JDK_JAVAC_OPTIONS" ]; then
+        # set '-Xlint:-options' to suppress message "Annotation processing is enabled"
+        local javac_opts="-Xlint:-options"
         # 
-        if [ "${P[created-files]}" ]; then
-            echo " - created files:"
-            sed -e 's/@@/\n/g' <<< ${P[created-files]} | sed -e 's/^.*$/    - &/' -e '$d'
+        [ "${P[module]}" ] && javac_opts+=" -Xlint:-module --module-path \"$MODULEPATH\""
+        # 
+        export JDK_JAVAC_OPTIONS="$javac_opts"; created_vars+=(JDK_JAVAC_OPTIONS)
+    fi
+    if [ -z "$JDK_JAVADOC_OPTIONS" ]; then
+        local javadoc_opts="--source-path ${P[src]} -d ${P[docs]}"
+        [ "${P[module]}" ] && javadoc_opts+=" --module-path \"$MODULEPATH\""
+        javadoc_opts+=" -version -author -Xdoclint:-missing -noqualifier \"java.*:application.*:datamodel.*:system.*\""
+        # 
+        export JDK_JAVADOC_OPTIONS="$javadoc_opts"; created_vars+=(JDK_JAVADOC_OPTIONS)
+    fi
+    if [ -z "$JAR_PACKAGE_LIBS" -a "${P[pckg-libs]}" ]; then
+        # in addition to libs, add files in resources, except the META-INF folder
+        if [ "${P[res]}" ]; then
+            [ "${P[pckg-libs]}" ] && local sp=" "
+            for res in $(find "${P[res]}" -type f -not -path '*/META-INF/*'); do
+                res=${res/src\//}   # 'src/resources/...' -> 'resources/...'
+                P[pckg-libs]+="$sp-C . $res"; sp=" "
+            done
         fi
-        if [ "${P[created-functions]}" ]; then
-            echo " - created functions:"
-            sed -e 's/@@/\n/g' <<< ${P[created-functions]} | sed -e 's/^.*$/    - &/' -e '$d'
+        export JAR_PACKAGE_LIBS="${P[pckg-libs]}"; created_vars+=(JAR_PACKAGE_LIBS)
+    fi
+    # remove P[pckg-libs] from output with -v option
+    [ "${P[is-zsh]}" ] && P[pckg-libs]="" || unset P[pckg-libs]
+    # 
+    if [ "${P[tests]}" ]; then
+        if [ -z "$JUNIT_CLASSPATH" ]; then
+            local cp="${P[target-cls]}"
+            # iterate over ${P[sep]}-separated string that works for bash and zsh
+            IFS='|'; for jar in ${P[target-tests]} ${P[target-res]} $(tr "${P[sep]}" '|' <<< ${P[junit-jars]}); do
+                cp+="$sep$jar"
+            done; unset IFS
+            export JUNIT_CLASSPATH="$cp"; created_vars+=(JUNIT_CLASSPATH)
+        fi
+        [ -z "$JUNIT_OPTIONS" ] && \
+            export JUNIT_OPTIONS="--details-theme=unicode" && created_vars+=(JUNIT_OPTIONS)
+    fi
+    if [ "${P[cov-agent]}" -a -z "$JACOCO_AGENT_OPTIONS" ]; then
+        local jacopts="-javaagent:${P[cov-agent]}=output=file,destfile=${P[cov-file]}"
+        export JACOCO_AGENT_OPTIONS="$jacopts" && created_vars+=(JACOCO_AGENT_OPTIONS)
+    fi
+    # 
+    if [ ! -f "$pd.classpath" ]; then
+        # 
+        local sp="[[:space:]]"
+        [ -z "${P[res]}" ]   &&   local del_res="-e /^#$sp---$sp.classpath.res$/,/^#$sp---$/d"
+        [ -z "${P[tests]}" ] && local del_tests="-e /^#$sp---$sp.classpath.tests$/,/^#$sp---$/d"
+        # 
+        if [ "${P[module]}" ]; then
+            # extract '.classpath-entry.mod' section and replace '<space>' with '*' and '\n' with '%'
+            # to preserve structure after flattening in variable cp_entry
+            local cp_entry=$(sed -e '1,/^# -- .classpath-entry.mod$/d' -e '/^# --$/,$d' -e 's/ /*/g' -e 's/$/%/' < "${P[script]}")
+            local del_jre="-e /^#$sp---$sp.classpath-jre$/,/^#$sp---$/d"         # del no-module section
+        else
+            local cp_entry=$(sed -e '1,/^# -- .classpath-entry$/d' -e '/^# --$/,$d' -e 's/ /*/g' -e 's/$/%/' < "${P[script]}")
+            local del_jre="-e /^#$sp---$sp.classpath-jre.mod$/,/^#$sp---$/d"     # del with-module section
+        fi
+        cp_entry=${cp_entry//[[:space:]]/}      # squeeze remaining spaces from cp_entry
+        (   # extract first section from .classpath template and delete
+            # parts that are not present in project (tests, resources)
+            sed -e '1,/^# -- .classpath-start$/d' \
+                -e '/^# --$/,$d' $del_res $del_tests $del_jre \
+                -e '/^# --/d' < "${P[script]}"
+            # 
+            # extract second part for injecting ${P[jars]} libraries
+            local jars=(); IFS="${P[sep]}" read ${P[ra-opt]} jars <<< "${P[jars]}"; unset IFS
+            # 
+            # iterate over ${P[jars]} and expand '@jar' variable in $cp_entry
+            for jar in ${jars[@]}; do
+                jar="${P[libs-abs]}/"${jar//*libs\//}  # replace local 'libs'-path with absolute path for .classpath
+                # revert '%' for '\n' and '*' for '<space>' substitutions in cp_entry
+                echo -n -E ${cp_entry/@jar/$jar} | tr '%*' '\n '
+            done
+            # extract third part closing .classpath file or use shortcut
+            # sed -e '1,/^# -- .classpath-end$/d' -e '/^# --$/,$d' < "${P[script]}"
+            echo "</classpath>"     # use (faster) shortcut
+        # 
+        ) | sed -e 's/^# //' \
+                -e 's!@src!'${P[src]}'!g' \
+                -e 's!@target!'${P[target]}'!g' \
+                -e 's!@classes!'${P[target-cls]}'!g' \
+                -e 's!@res-out!'${P[target-res]}'!g' \
+                -e 's!@res!'${P[res]}'!g' \
+                -e 's!@tests!'${P[tests]}'!g' \
+                -e 's!@test-classes!'${P[target-tests]}'!g' \
+                > $pd.classpath; created_files+=("$pd.classpath")
+    fi
+    if [ ! -f "$pd.project" ]; then
+        sed -e '1,/^# -- .project$/d' \
+            -e '/^# --$/,$d' \
+            -e 's/^# //' < "${P[script]}" > $pd.project; created_files+=("$pd.project")
+    fi
+    if [ ! -f $pd.coderunner_launch ]; then
+        # create code runner java @.coderunner_launch file
+        [ -z "${P[module]}" ] &&
+            echo -e "-cp \"$CLASSPATH\"\\n    ${P[main]}" > $pd.coderunner_launch ||
+            echo -e "-cp \"$CLASSPATH\"\\n -p \"$MODULEPATH\"\\n -m ${P[module]}/${P[main]}" \
+            > $pd.coderunner_launch
+        # 
+        created_files+=("$pd.coderunner_launch")
+    fi
+    # return 0 if anything was created, otherwise return marker $RC_NOTHING_CREATED
+    # to print "project environment has been set up"
+    local anything_created="${created_vars[@]}${created_files[@]}${created_funcs[@]}"
+    # 
+    [ ${#anything_created} -eq 0 ] && return $RC_NOTHING_CREATED || return 0
+}
+
+function parse_args() {
+    for arg in $@; do
+        case $arg in
+        -h|-he|-eh|-hv|-vh|-hev|-hve|-ehv|-vhe|-evh|-veh|--help) return $RC_HELP_MSG ;;
+        -v|--verbose) local arg_verbose=true ;;
+        -e|--environment) local arg_env=true ;;
+        -ev|-ve) local arg_verbose=true; local arg_env=true ;;
+        --post) local post=true ;;
+        esac
+    done
+    if [ "$post" -a "$arg_verbose" ]; then
+        # show array P[] of discovered project
+        echo "----------------------------"
+        declare -p P | sed -e 's/\[/\n  [/g'
+    fi
+    if [ "$post" -a "$arg_env" ]; then
+        [ "$arg_verbose" ] && echo "----" || echo "----------------------------"
+        echo "- CLASSPATH:;$CLASSPATH" | sed -e 's/;/\n  + /g'; echo
+        echo "- JUNIT_CLASSPATH:;$JUNIT_CLASSPATH" | sed -e 's/;/\n  + /g'; echo
+        echo "- MODULEPATH:;$MODULEPATH" | sed -e 's/;/\n  + /g'; echo
+        echo "- JUNIT_OPTIONS: $JUNIT_OPTIONS"; echo
+        echo "- JDK_JAVAC_OPTIONS: $JDK_JAVAC_OPTIONS"; echo
+        echo "- JDK_JAVADOC_OPTIONS: $JDK_JAVADOC_OPTIONS"; echo
+        echo "- JAR_PACKAGE_LIBS: $JAR_PACKAGE_LIBS"
+    fi
+    [ "$post" ] && [ "$arg_verbose" -o "$arg_env" ] && echo "----------------------------"
+    return 0
+}
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# Output set of instructions to execute the command passed as argument.
+# Usage:
+#   command [command] [--coverage] [--package-libs|--fat-jar]
+# 
+# Commands:
+#  - build                      ; perform the build process with stages:
+#                               ; - clean compile compile-tests run-tests package
+#  - clean                      ; remove files created during the build process
+#  - compile, compile-tests     ; compile sources, unit tests
+#  - run, run-tests             ; run the program, run unit tests
+#  - coverage, coverage-report  ; record code coverage, create coverage reports
+#  - package|jar [--package-libs|--fat-jar] ; package compiled code into .jar
+#  - run-jar                    ; run the packaged .jar
+#  - javadoc|javadocs|docs|doc  ; create Javadoc
+# 
+# @Return instructions to execute commands
+# 
+function command() {
+    local cmd="$1"; shift; local args=(); local sp=""
+    for arg in $@; do
+        case "$arg" in
+        --coverage) [ "$JACOCO_AGENT_OPTIONS" ] && local cov_opts="$JACOCO_AGENT_OPTIONS" ;;
+        --package-libs|--fat-jar) local include_jars="--include-libs" ;;
+        *) args+="$sp$arg"; sp=" " ;;
+        esac
+    done
+
+    case "$cmd" in
+
+    build)
+        echo "mk clean compile compile-tests run-tests package"
+        ;;
+
+    clean)
+        local to_clean=""   # target, logs, docs*, cov* (* part of target)
+        [ -d "${P[target]}" ] && to_clean+="${P[target]} "
+        [ -d "${P[logs]}" ] && to_clean+="${P[logs]} "
+        [ "$to_clean" ] && echo "rm -rf $to_clean" || echo ": nothing to clean"
+        ;;
+
+    compile)
+        [ -d "${P[res]}" -a ! -f "${P[target-res]}/${P[manifest]}" ] && local addOn=" &&"
+        # 
+        echo "javac \$(find ${P[src]} -name '*.java') -d ${P[target-cls]}$sp${args[@]}$addOn"
+        [ "$addOn" ] && echo "mkdir -p ${P[target-res]} && cp -R ${P[res]} ${P[target-res]}/.."
+        ;;
+
+    compile-tests)
+        [ -d "${P[tests]}" ] &&
+            echo "javac -cp \$JUNIT_CLASSPATH \$(find ${P[tests]} -name '*.java') -d ${P[target-tests]} ${args[@]}" ||
+            echo "echo no tests present"
+        ;;
+
+    run)
+        # alternative main class can be passed as first argument
+        [ $# -gt 0 ] && local main="$1" && shift || local main="${P[main]}"
+        if [ "$main" ]; then
+            [ "${P[module]}" ] &&
+                echo "java -p \$MODULEPATH -m \"${P[module]}/$main\" ${args[@]}" ||
+                echo "java \"$main\" ${args[@]}"
+        else
+            echo "echo no main class to execute"
+        fi ;;
+
+    run-tests)
+        if [ -d "${P[tests]}" ]; then
+            echo "java -cp \$JUNIT_CLASSPATH \\"
+            [ "$cov_opts" ] && echo "  $cov_opts \\"
+            echo "  org.junit.platform.console.ConsoleLauncher \$JUNIT_OPTIONS \\"
+            # [ ${#args[@]} -gt 0 ] && echo "  ${args[@]}" || echo "  --scan-class-path"
+            [ ${#args[@]} -gt 0 ] && echo "  $args" || echo "  --scan-class-path"
+            # [ ${#args[@]} -gt 0 ] && echo "  -c application.Application_0_always_pass_Tests" || echo "  --scan-class-path"
+        else
+            echo "echo no tests present"
+        fi ;;
+
+    coverage)
+        # coverage agent, see: https://www.jacoco.org/jacoco/trunk/doc/agent.html
+        [ -d "${P[cov]}" ] && echo "rm -rf ${P[cov]} &&"
+        command run-tests --coverage ${args[@]}
+        echo "&& echo coverage events recorded in: ${P[cov-file]}"
+        ;;
+
+    coverage-report)
+        # coverage report generation, see: https://www.jacoco.org/jacoco/trunk/doc/cli.html
+        echo "java -jar ${P[cov-report-gen]} report ${P[cov-file]} \\"
+        echo "  --sourcefiles ${P[src]} \\"
+        echo "  --classfiles ${P[target-cls]} \\"
+        echo "  --html ${P[cov-report]}"    # --csv coverage.cvs, --xml coverage.xml
+        echo "&& echo coverage report created in: ${P[cov-report]}/index.html"
+        ;;
+
+    package|jar)
+        [ "$include_jars" ] && local sp=" "
+        local manifest=$(prepare_manifest $include_jars)
+        # 
+        echo "jar -c -v -f \"${P[target-jar]}\" \\"
+        [ "$manifest" ] && echo "  --manifest=$manifest \\"
+        echo "  -C ${P[target-cls]} . \$(packaged_content$sp$include_jars) &&"
+        echo "  [ -f \${P[target-jar]} ] &&"
+        echo "    echo -e \"-->\\\ncreated: \${P[target-jar]}\" ||"
+        echo "    echo -e \"-->\\\nno compiled classes or manifest, no .jar created\""
+        ;;
+
+    run-jar)
+        echo "java -jar \"${P[target-jar]}\""
+        ;;
+
+    javadoc|javadocs|docs|doc)
+        if [ -d "${P[src]}" ]; then
+            echo "javadoc \$(eval echo \$JDK_JAVADOC_OPTIONS) \\"
+            echo "  \$(builtin cd ${P[src]} &&"
+            echo "     find -type d | sed -e 's!^[\./]*!!' -e 's!/!.!g') &&"
+            echo "  echo -e \"-->\\\ncreated javadoc in: \${P[docs]}\""
+        else
+            echo "echo no source files present"
         fi ;;
     esac
-    return 0
 }
-
-if ! typeset -f command >/dev/null; then
-    # 
-    function command() {
-        case "$1" in
-
-        clean) echo rm -rf ${P[target]} ${P[log-dir]} ${P[doc-dir]} ${P[cov-dir]}
-            ;;
-
-        compile)
-            echo javac $\(find ${P[src]} -name \'*.java\'\) -d ${P[classes]}';'
-            [ -d "${P[res]}" ] && command copy-resources
-            ;;
-
-        compile-tests) echo javac -cp \"\$JUNIT_CLASSPATH\" $\(find ${P[tests]} -name \'*.java\'\) -d ${P[test-classes]}';'
-            [ -d "${P[res]}" ] && command copy-resources
-            ;;
-
-        copy-resources) echo copy ${P[res]} ${P[target]}/${P[res]}
-            ;;
-
-        run) shift;     # echo "echo java ${P[run]} $*"
-            echo java -p \"\$MODULEPATH\" -m ${P[module]}/${P[run]} $*
-            ;;
-
-        run-tests) echo java -cp \"\$JUNIT_CLASSPATH\" \\
-            echo " " org.junit.platform.console.ConsoleLauncher \$JUNIT_OPTIONS \\
-            echo " " --scan-class-path
-            ;;
-
-        package|jar)
-            echo tar cv ${P[lib]}/'{jackson,logging}*/*' "| tar -C ${P[target]} -xvf - "';'
-            echo jar -c -v -f ${P[jar]} '\'
-            [ -f ${P[manifest]} ] && \
-                echo "     " $(echo -m ${P[manifest]}) '\'
-            echo "     " -C ${P[classes]} . ';'
-            # echo jar uvf ${P[jar]} -C ${P[target]} ${P[res]}
-            ;;
-
-        build)
-            echo mk clean compile compile-tests run-tests package javadoc
-            ;;
-
-        tests)
-            echo mk compile compile-tests run-tests
-            ;;
-
-        coverage)
-            echo java $\(eval echo \$JACOCO_AGENT\) $\(eval echo \$JUNIT_CLASSPATH\) \\
-            echo " " org.junit.platform.console.ConsoleLauncher $\(eval echo \$JUNIT_OPTIONS\) \\
-            echo " " --scan-class-path';'
-            echo echo coverage events recorded in: ${P[cov-dir]}/jacoco.exec
-            ;;
-
-        doc|docs|javadoc)
-            echo javadoc -d ${P[doc-dir]} $\(eval echo \$JDK_JAVADOC_OPTIONS\) \\
-            echo " " $\(builtin cd ${P[src]}\; find . -type d \| sed -e \'s!/!.!g\' -e \'s/^[.]*//\'\)
-            ;;
-
-        esac; return 0
-    }
-fi
 
 if ! typeset -f show >/dev/null; then
     # 
+    # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+    # Output set of instructions to execute for the commands passed as arguments.
+    # Usage:
+    #   show [commands]
+    # 
     function show() {
-        [ "${P[is-zsh]}" ] && trap "" DEBUG     # disable ANSI-codes for 'zsh'
-        # 
-        local cmds=(clean compile compile-tests run run-tests build package coverage javadoc)
-        [ "$1" ] && local cmds=() && \
-            for cmd in "$@"; do
-                [ "$(command $cmd)" ] && cmds+=($cmd)
-            done
-        # 
-        local num=0
-        for cmd in "${cmds[@]}"; do
-            shift               # shift $@ to obtain args after last command
-            num=$((num + 1))    # detect last command before args[]
-            [[ $num -ge ${#cmds[@]} ]] && local args="$@" && local last="true"
-            # 
-            echo "$cmd:"
-            command $cmd $args | sed -e 's/.*/  &/'     # indent by 2 spaces
-            [ -z "$last" ] && echo      # line feed, except for last command
-        done
-        [ "${P[is-zsh]}" ] && trap "echo -ne '\e[m'" DEBUG; return 0
+        [ "$1" = "--help" ] && echo "show cmd [args] cmd [args] ..." && return 0 ||
+            mk --show $@
     }
-    created function "show [cmd1, cmd2...]"
+    created_funcs+=("show cmd [args] cmd [args] ...;")
 fi
 
 if ! typeset -f mk >/dev/null; then
     # 
+    # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+    # Show [--show] or execute commands passed as arguments.
+    # Usage:
+    #   mk [--show] [commands]
+    # 
     function mk() {
-        [ "${P[is-zsh]}" ] && trap "" DEBUG     # disable ANSI-codes for 'zsh'
+        local args=(); local sp=""
         # 
-        local cmds=(); local num=0
-        for cmd in "$@"; do
-            [ "$(command $cmd)" ] && cmds+=($cmd)
-        done
-        for cmd in "${cmds[@]}"; do
-            shift               # shift $@ to obtain args after last command
-            num=$((num + 1))    # detect last command before args[]
-            [[ $num -ge ${#cmds[@]} ]] && local args="$@" && local last="true"
+        for arg in $@; do case "$arg" in
+        --show) local show_only=true ;;
+        --help) echo "mk [--show] cmd [args] cmd [args] ..."; return 0 ;;
+        *) args+=($sp$arg); sp=" " ;;
+        esac; done
+        # 
+        if [ ${#args[@]} -eq 0 ]; then
+            mk --show build compile compile-tests run run-tests package run-jar javadoc clean
+        else
+            args+=("STOP")
+            local num=${#args[@]}; local cmd=""; local execute=""
             # 
-            command $cmd $args          # output command in terminal
-            # 
-            # line feed, except for last command; print "---" after run
-            [ "$cmd" = "run" ] && echo "---" || { [ -z "$last" ] && echo; }
-            # 
-            eval $(command  $cmd $args | sed -e 's/\\$//' | tr -d '\n')
-        done
-        [ "${P[is-zsh]}" ] && trap "echo -ne '\e[m'" DEBUG; return 0
+            local cmd_args=();  # per-command args[]
+            for arg in ${args[@]}; do num=$((num - 1)); local cmd_sp=""
+                arg=${arg/ /}       # remove leading ' ' appearing in zsh
+                case "$arg" in
+                # commands separate commands from arguments
+                build|clean|compile|compile-tests|run|run-tests|coverage|coverage-report|package|jar|run-jar|javadoc|javadocs|docs|doc)
+                    [ -z "$cmd" ] && cmd="$arg" || execute=true ;;
+                # 
+                # collect per-command arguments
+                *) [ "$arg" != "STOP" ] && cmd_args+=("$arg") ;;
+                # 
+                esac
+                [[ $num -eq 0 ]] && execute="true"
+                # 
+                if [ "$execute" ]; then         # always show command
+                    [ ${#cmd_args[@]} -gt 0 ] && local c_args=" [$(echo ${cmd_args[@]})]" || local c_args=""
+                    # 
+                    echo "$cmd:$c_args"
+                    # 
+                    command $cmd ${cmd_args[@]} | sed -e 's/.*/  &/'  # indent commands by 2 spaces
+                    # 
+                    # print seperator "---" for commands producing longer output, else newline except for last line
+                    [ "$show_only" ] && [ $num -gt 0 ] && echo ||
+                        case "$cmd" in
+                        build|clean|compile|compile-tests) ;;
+                        *) echo "---" ;;
+                        esac
+                    # 
+                    if [ -z "$show_only" ]; then            # execute command with ${cmd_args[@]}, if provided
+                        # 
+                        # fetch command which may contain unresolved substitutions, e.g. "$(find ... )"
+                        local exec_cmd="$(command $cmd ${cmd_args[@]})"
+                        [ "$cmd" = "build" ] && echo ""     # output line after 'mk build'
+                        # 
+                        # flatten command into single-line for zsh, remove " \" from single-line command
+                        exec_cmd=${exec_cmd// \\/}          # ; echo "-->" [$exec_cmd]
+                        [ "${P[is-zsh]}" ] && exec_cmd=$(tr -d '\n' <<< $exec_cmd)
+                        # 
+                        eval $exec_cmd                      # execute flattened, single-line command
+                        # 
+                        # print newline for executed run-commands, except for "run-tests", which issues newline
+                        if [ $? -eq 0 ]; then
+                            [ $num -gt 0 -a "$cmd" != "run-tests" ] && echo
+                        else
+                            return 1                        # exit processing-loop on failure
+                        fi
+                    fi
+                    cmd="$arg"; cmd_args=(); execute=""
+                fi
+            done
+        fi; return 0
     }
-    created function "mk [cmd1, cmd2...] [args]"
+    created_funcs+=("mk [--show] cmd [args] cmd [args] ...;")
 fi
 
 if ! typeset -f wipe >/dev/null; then
     # 
+    # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+    # Wipe the project environment, remove all files, environment variables and
+    # functions created during sourcing.
+    # Usage:
+    #   wipe [-a|--all]
+    # 
     function wipe() {
-        # collect environment variables to remove
-        local env2=(); for e in PROJECT_PATH CLASSPATH JUNIT_CLASSPATH MODULEPATH \
-                JDK_JAVAC_OPTIONS JDK_JAVADOC_OPTIONS JUNIT_OPTIONS JACOCO_AGENT
-        do
-            [ "$(eval echo '$'$e)" ] && env2+=($e)
+        for arg in $@; do case "$arg" in
+        --all|-a) local all=true ;;
+        --help) echo "wipe [--all|-a]"; return 0 ;;
+        -*) echo "unknown flag: [$arg], use: $(wipe --help)"; return 1 ;;
+        *) echo "unknown argument: [$arg], use: $(wipe --help)"; return 1 ;;
+        esac; done
+        # 
+        local wipe_vars=( \
+            CLASSPATH MODULEPATH JUNIT_CLASSPATH JUNIT_OPTIONS JDK_JAVAC_OPTIONS \
+            JDK_JAVADOC_OPTIONS JAR_PACKAGE_LIBS JACOCO_AGENT_OPTIONS \
+        )
+        local wipe_files=(.classpath .project .coderunner_launch)
+        local wipe_funcs=(command show mk wipe prepare_manifest packaged_content)
+        # 
+        local rm_vars=(); local rm_files=(); local rm_funcs=()
+        # 
+        # collect environment variables, files and functions to wipe
+        for var in "${wipe_vars[@]}"; do
+            [ "$(eval echo '$'$var)" ] && rm_vars+=($var) && local print_wiping=true
         done
         # 
-        local files=()          # collect created files to remove
-        [ -f .classpath ] && files+=(.classpath)
-        [ -f .project ] && files+=(.project)
-        [ -f .vscode/.classpath ] && files+=(.vscode/.classpath)
-        [ -f .vscode/.modulepath ] && files+=(.vscode/.modulepath)
-        [ -f .vscode/.sources ] && files+=(.vscode/.sources)
+        for file in $(show clean | sed -e '/rm -rf/!d' -e 's/[[:space:]]*rm -rf//'); do
+            file=${file//[[:space:]]/}  # trim spaces from file name
+            [ -e "$file" ] && rm_files+=($file) && local print_wiping=true
+        done
         # 
-        # collect functions to remove
-        local funcs=(); for f in show mk wipe copy command; do
-            if typeset -f $f >/dev/null; then
-                funcs+=($f)
+        [ "$all" ] && for file in "${wipe_files[@]}"; do
+            file=${file//[[:space:]]/}  # trim spaces from file name
+            [ -e "$file" ] && rm_files+=($file) && local print_wiping=true
+        done
+        # 
+        [ "$all" ] && for func in "${wipe_funcs[@]}"; do
+            func=${func//[[:space:]]/}  # trim spaces from function name
+            # keep 'wipe' function, remove with 'wipe -a'
+            [ "$func" = "wipe" -a -z "$all" ] && continue
+            if typeset -f $func >/dev/null; then
+                rm_funcs+=($func)
+                local print_wiping=true
             fi
         done
         # 
-        [[ "${#env2[@]}" -gt 0 ]] && \
-            unset ${env2[@]} && \
-            echo " - unset variables: $(print_list ${env2[@]:0:4})," && \
-            echo "     $(print_list ${env2[@]:4})"
+        [ "$print_wiping" ] && echo "wiping:"
         # 
-        if [[ "$1" =~ (-a|--all|-la) ]]; then
-            [[ "${#files[@]}" -gt 0 ]] && \
-                rm -rf ${files[@]} && \
-                echo " - removed files: $(print_list ${files[@]:0:3})," && \
-                echo "     $(print_list ${files[@]:3})"
+        if [ "${rm_vars[@]:0:1}" ]; then
+            local cmd="unset ${rm_vars[@]}"
+            local line=" - unset"; local sp=" "
             # 
-            [[ "${#funcs[@]}" -gt 0 ]] && \
-                unset -f ${funcs[@]} && \
-                echo " - removed functions: $(print_list ${funcs[@]} print_list)"
-            # 
-            [[ "$1" =~ (-la) ]] && \
-                rm -rf "${P[lib]}" && echo " - removed: ${P[lib]}"
-        fi
-        unset -f print_list
-    }
-    # 
-    function print_list() {
-        for arg in $@; do echo -ne $sep$arg; sep=", "; done
-    }
-    created function "wipe [--all|-a|-la]"
-fi
-
-if ! typeset -f copy >/dev/null; then
-    # 
-    # Copy content of (resource) directory passed as first argument to directory
-    # passed as second argumet, except 'META-INF' directory.
-    # Usage:
-    #   copy [from_dir] [to_dir]
-    # @param from_dir source directory from which content is recursively copied
-    # @param to_dir destination directory
-    function copy() {
-        local from_dir="$1"
-        local to_dir="$2"
-        if [ -z "$from_dir" ] || [ -z "$to_dir" ]; then
-            echo "use: copy <from-dir> <to-dir>"
-        else
-            [[ ! -d "$to_dir" ]] && mkdir -p $to_dir
-            # find $from_dir ! -path '*META-INF*' -type f | xargs cp --parent -t $to_dir
-            tar -cpf - -C $from_dir --exclude='META-INF' . | tar xpf - -C $to_dir
-        fi
-    }
-fi
-
-# 
-# ------ setup-classpath: -----------------------------------------------------
-# 
-# https://stackoverflow.com/questions/51175148/nested-condition-of-if-statement-in-bash
-if  [ -z "$CLASSPATH" -o -z "$JUNIT_CLASSPATH" -o -z "$MODULEPATH" -o \
-      ! -f .classpath -o ! -f .project ] || \
-        { [ -d .vscode ] && \
-            [ ! -f .vscode/.classpath -o ! -f .vscode/.modulepath -o ! -f .vscode/.sources ]; }
-then
-    # 
-    function setup_classpath() {
-        # CLASSPATH seperator is ';' on Windows, any other system it is ':'
-        [ "${P[is-win]}" ] && local sep=';' || local sep=':'
-        # 
-        local jars=()       # jars from libraries
-        local jars_abs=()   # jars with absolute path used for .classpath file
-        local cp=""; local jcp=""
-        if [ -z "$CLASSPATH" -o -z "$JUNIT_CLASSPATH" ]; then
-            # 
-            local libs_path_abs=$(builtin cd "${P[lib]}"; dirname $(pwd))
-            # replace drive letter '/c' or '/cygdrive/c' with 'C:' on Windows
-            [ "${P[is-win]}" ] && \
-                libs_path_abs=$(sed -e 's!^/cygdrive!!' <<< "$libs_path_abs" | \
-                                    sed -E 's!^/([[:alpha:]])/!\U\1:/!')
-            # 
-            [ -L "${P[lib]}" ] && local lib_is_link="true"
-            [ "$lib_is_link" ] && local lib_tr="$libs_path_abs/${P[lib]}" || local lib_tr="${P[lib]}"
-            # 
-            local sep2=""; local sep3=""
-            for cpe in "${P[classes]}" "${P[test-classes]}" "${P[target]}/${P[res]}" \
-                $(find "$lib_tr" -name '*.jar')
-            do
-                # 
-                case "$cpe" in
-                # include in CLASSPATH only: junit-jupiter-api-5.9.3.jar (no other junit lib, jacoco)
-                */junit/junit-jupiter-api*.jar)
-                    cp+="$sep2$cpe" && sep2="$sep"
-                    jars+=($cpe)
-                    ;;
-
-                # include in JUNIT_CLASSPATH only: jacoco, junit-platform-console-standalone-1.9.2.jar
-                "${P[test-classes]}"|*/${P[test-runner]}|*/jacoco/*.jar)
-                    jcp+="$sep3$cpe" && sep3="$sep"
-                    [ "$cpe" != "${P[test-classes]}" ] && jars+=($cpe)
-                    ;;
-
-                # exlcude */junit/*.jar libraries from CLASSPATH and JUNIT_CLASSPATH, tests
-                # will run with libs included in test runner jar
-                */junit/*.jar) ;;
-
-                # include other in both, CLASSPATH and JUNIT_CLASSPATH
-                *)  cp+="$sep2$cpe" && sep2="$sep"
-                    jcp+="$sep3$cpe" && sep3="$sep"
-                    # 
-                    # remember remaining .jar files with abs paths for '.classpath' file
-                    if [ -f "$cpe" ]; then
-                        jars+=($cpe)
-                        [ "$lib_is_link" ] && jars_abs+=("$cpe") || jars_abs+=("$libs_path_abs/$cpe")
-                    fi ;;
-                esac
-            done
+            for v in "${rm_vars[@]}"; do
+                local line_added="$line$sp$v"
+                if [ ${#line_added} -gt 78 ]; then
+                    echo "$line,"; line="   $v"
+                else
+                    line+="$sp$v"; sp=", "
+                fi
+            done; [ "$line" ] && echo "$line"
+            eval $cmd   # execute unset command
         fi
         # 
-        [ -z "$CLASSPATH" ] && export CLASSPATH="$cp" && created env CLASSPATH
-        [ -z "$JUNIT_CLASSPATH" ] && export JUNIT_CLASSPATH="$jcp" && created env JUNIT_CLASSPATH
-
-        if [ -z "$MODULEPATH" ]; then
-            local mp=""; local sep2=""
-            # cut trailing jar-name leaving dirname for modulepath with 'libs/*' (remove trailing 'libs' entry)
-            for mod in "${P[classes]}" $(tr ' ' '\n' <<< ${jars[@]} | sed -e 's|/[^/]*$||' -e '/libs$/d' | uniq); do
-                mp+="$sep2$mod"; sep2="$sep"
-            done
-            export MODULEPATH="$mp"
-            created env MODULEPATH
-        fi
-
-        # on Windows, use abs path with C:/ for .classpath file
-        if [ ! -f .classpath ]; then
-            # 
-            template .classpath | sed \
-                -e 's!@target!'${P[target]}'!g' \
-                -e 's!@classes!'${P[classes]}'!g' \
-                -e 's!@test-classes!'${P[test-classes]}'!g' \
-                -e 's!@resources!'${P[target]}/${P[res]}'!g' \
-                > .classpath
-            # 
-            for jar in ${jars_abs[@]}; do
-                # put absolute paths in .classpath to be effective in VS Code launch.json
-                template .classpath-entry | sed -e 's!@jar!'$jar'!g'
-            done >> .classpath
-            # 
-            template .classpath-end >> .classpath
-            # 
-            # remove 4 lines following match: 'path="tests"' if no 'tests' folder is present
-            [ ! -d "${P[tests]}" ] && sed -e '/path="tests"/,+4d' < .classpath > .c && mv .c .classpath
-            # 
-            # remove line with 'path="resources"' if no 'resources' folder is present
-            [ ! -d "${P[res]}" ] && sed -e '/path="resources"/d' < .classpath > .c && mv .c .classpath
-            # 
-            created file ".classpath"
-        fi
-
-        if [ -d .vscode ]; then
-            [ ! -f .vscode/.classpath ] && \
-                echo "$CLASSPATH" > .vscode/.classpath && created file ".vscode/.classpath"
-
-            [ ! -f .vscode/.modulepath ] && \
-                echo "$MODULEPATH" > .vscode/.modulepath && created file ".vscode/.modulepath"
-
-            [ ! -f .vscode/.sources ] && \
-                find ${P[src]} -type f -name '*.java' > .vscode/.sources && created file ".vscode/.sources"
-        fi
-
-        [ ! -f .project ] && \
-            template .project > .project && created file ".project"
+        [ "${rm_files[@]:0:1}" ] && \
+            local cmd="rm -rf ${rm_files[@]}" && echo " - $cmd" && eval $cmd
+        # 
+        [ "${rm_funcs[@]:0:1}" ] && \
+            local cmd="unset -f ${rm_funcs[@]}" && echo " - $cmd" && eval $cmd
         # 
         return 0
     }
-
-    function template() {
-        sed -n '/^# -- '"$1"'$/,/^# --/p' "${P[env-script]}" | \
-            sed -e '1d' -e '$d' -e 's/^# //'
-    }
-
-    # invoke setup with functions for setting up CLASSPATH, JUNIT_CLASSPATH, MODULEPATH
-    # and files: .project, .classpath, .vscode/.classpath, .vscode/.modulepath, vscode/.sources
-    setup --setup-classpath
-else
-    # skip setting up CLASSPATH and files
-    setup
+    created_funcs+=("wipe [--all|-a]")
 fi
 
-unset -f setup created
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# Prepares 'target/resources/META-INF/MANIFEST.MF' by adding lines:
+#   Main-Class: application.Application
+#   Class-Path: resources 
+#     resources/application.properties
+#     resources/application.yaml
+#     resources/application.yml
+#     libs/jackson/jackson-annotations-2.19.0.jar (with --include-libs)
+#     libs/jackson/jackson-core-2.19.0.jar
+#     libs/jackson/jackson-databind-2.19.0.jar
+# Usage:
+#   prepare_manifest [--include-libs]
+# @Return path to MANIFEST.MF used from 'src/resources' or 'target/resources'
+# Function is needed after configuration to package .jar files, do not unset.
+# 
+function prepare_manifest() {
+    if [ "${P[manifest]}" ]; then
+        rm -rf "${P[target-res]}"
+        # fresh copy of "${P[res]}" to "${P[target-res]}" (entire folder)
+        mkdir -p "${P[target-res]}" && cp -R "${P[res]}" "${P[target-res]}/.."
+        local manifest="${P[target-res]}/${P[manifest]}"
+        # add 'Main-Class:' and 'Class-Path:' entries, if not present
+        # remove empty lines, -e '$a\Main-Class: '"${P[main]}"
+        sed -e '/^[[:space:]]*$/d' < "$manifest" > "$manifest.tmp" && mv "$manifest.tmp" "$manifest"
+        # 
+        if [ "${P[main]}" -a -z "$(grep 'Main-Class:' $manifest)" ]; then
+            echo "Main-Class: ${P[main]}" >> "$manifest"
+        fi
+        if [ -z "$(grep 'Class-Path:' $manifest)" ]; then
+            # add resources and libs from $JAR_PACKAGE_LIBS, if present (keep space after "${P[res]} ")
+            echo "Class-Path: resources " >> "$manifest"
+            [ "$1" = "--include-libs" ] && local filter="cat" || local filter="grep -v '.jar'"
+            sed -e 's/-C[[:space:]][a-zA-Z0-9_./\-]*[[:space:]]//g' \
+                -e 's/[[:space:]]/\n    /g' \
+                -e 's/^/    /' <<< $JAR_PACKAGE_LIBS | eval $filter >> "$manifest"
+        fi
+        echo $manifest
+    fi; return 0
+}
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# Return content added to .jar as expected by the .jar command with adjusted
+# paths for libs and resources matching the internal path.
+# Usage:
+#   packaged_content [--include-libs]
+# @Return:
+#  -C . libs/jackson/jackson-annotations-2.19.0.jar
+#  -C . libs/jackson/jackson-core-2.19.0.jar ...
+#  -C target resources/application.properties ...
+# 
+# @Return path to MANIFEST.MF used from 'src/resources' or 'target/resources'
+# Function is needed after configuration to package .jar files, do not unset.
+# 
+function packaged_content() {
+    [ -d "${P[target-res]}" ] && local res="${P[target-res]}" || local res="${P[res]}"
+    res=${res%resources}    # remove trailing 'resources' (for just 'resources')
+    res=${res%/}            # remove trailing '/' (for '/resources')
+    # 
+    # extract files from "-C <path> <file>" entries in $JAR_PACKAGE_LIBS
+    # sed -n '0~3p' prints every 3rd line
+    for c in $(tr ' ' '\n' <<< $JAR_PACKAGE_LIBS | sed -n '0~3p'); do
+        case "$c" in
+        *.jar)  [ "$1" = "--include-libs" ] && echo "-C ${P[libs-rpup]} $c" ;;
+        *)      echo "-C $res $c" ;;
+        esac
+    done; return 0
+}
+
+function locate_libs() {
+    [ "${P[pdir]}" ] && local pd="${P[pdir]}/"  # local project directory
+    local libs="${P[libs]}"
+    # 
+    # read 'P[libs-search]' space-separated paths into libs_paths array
+    IFS=' ' read ${P[ra-opt]} libs_paths <<< "${P[libs-search]}"; unset IFS
+    for p in ${libs_paths[@]}; do
+        local lp="$p/$libs"
+        echo -n "probing for 'libs'" > /dev/tty
+        [ -d "$pd$lp" ] && echo "$lp" && echo ", found at:" $lp > /dev/tty && return 0 || \
+            echo ", none." > /dev/tty
+    done; return -1
+}
+
+function parse_module_name() {
+    [ "$1" ] && local minfo="$1" || local minfo="${P[module-info]}"
+    # 
+    if [ -f "$minfo" ]; then
+        # read file 'module-info.java' and strip comments
+        local mod=" "$(sed -e 's|//.*||' -e 's|/\*.*||' -e 's|^[[:space:]]*\*.*||' -e '/^[[:space:]]*$/d' < "$minfo")
+        # 
+        mod=${mod/?*module/}    # remove from remaining text everything including 'module'
+        mod=${mod/'{'?*/}       # remove everything after '{' leaving module name in the middle
+        mod=${mod#"${mod%%[![:space:]]*}"}      # strip leading whitespaces
+        mod=${mod%"${mod##*[![:space:]]}"}      # strip trailing whitespaces
+        echo ${mod}
+    fi; return 0
+}
+
+function is_project_directory() {
+    [ "$1" ] && local path="$1" || local path="."
+    [ ! -d "$path/.git" -o ! -d "$path/${P[src]}" ] && return 1
+    echo true; return 0
+}
+
+function realpath_() {
+    if [ "${P[has-realpath]}" ]; then
+        /usr/bin/realpath $@
+    else
+        # obtain last arg in $@ arguments
+        [ "${P[is-zsh]}" ] && local last_arg=${@:$#} || local last_arg="${!#}"
+        echo $last_arg
+    fi
+}
+
+function cygpath_() {
+    if [ "${P[has-cygpath]}" ]; then
+        /usr/bin/cygpath $@ | sed -e 's|\\|/|g'         # invoke cygpath, if present
+    else
+        # emulate cygpath behavior, if not present, obtain last arg in $@ arguments
+        [ "${P[is-zsh]}" ] && local last_arg=${@:$#} || local last_arg="${!#}"
+        if [ "$1" = "-w" ]; then
+            # emulate 'cygpath -w <path>' -> convert to absolute Windows path C:\Users\...
+            local rp=$(realpath_ "$last_arg")               # rp="/cygdrive/d/home/svgr"
+            local rp2=$(sed -e 's|.*/[a-zA-Z]/||' <<< $rp)  # separate '/cygdrive/c' (rp1) from '/home/svgr' (rp2)
+            local rp1=${rp%"$rp2"}                          # echo -E "rp1: [$rp1]", echo -E "rp2: [$rp2]"
+            if [ "$rp1" ]; then
+                # last char of rp1 is drive letter 'c' -> convert to uppercase 'C'
+                local drv=${rp1: -2: -1}
+                [ "${P[is-zsh]}" ] && drv="${drv:u}:" || drv="${drv^^}:"
+            fi
+            echo -E $drv$rp     # output Windows-path 'C:\User\...', -E avoids interpretation of '\t' in zsh
+        else
+           echo $last_arg       # with no option, output path provided as last argument
+        fi
+    fi
+}
+
+function print_created_assets() {
+    # 
+    [ "${created_vars[@]:0:1}" ] && echo " - created environment variables:" &&
+        IFS=';' && for var in ${created_vars[@]}; do
+            # remove all spaces for zsh and bash:
+            var=${var// /}
+            [ -z "$var" ] && continue
+            echo "    -" $var
+        done
+    # 
+    [ "${created_files[@]:0:1}" ] && echo " - created files:" &&
+        IFS=';' && for file in ${created_files[@]}; do
+            echo "    -" $file
+        done
+    # 
+    [ "${created_funcs[@]:0:1}" ] && echo " - created functions:" &&
+        IFS=';' && for func in ${created_funcs[@]}; do
+            [ "$func" ] && echo "    -" $func
+        done
+    # 
+    [ "$IFS" ] && unset IFS
+    return 0
+}
 
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-# Files extractable by extract() separated by markers: '^# -- filename$' and
-# '^# --$'.
+# Perform project discovery and configuration with the creation of files,
+# environment variables and functions.
 # 
-# -- .classpath
+discover_env &&
+        parse_args $@ &&
+        configure_env &&
+        echo "----------------------------" &&
+        print_created_assets &&
+        echo "----------------------------" &&
+        echo '-->' success &&
+        parse_args --post $@ \
+    || case $? in
+        $RC_HELP_MSG)
+            echo "configure Java project"
+            echo "- ${P[script]} [-evh] [--verbose] [--environment] [--help]"
+            ;;
+        $RC_NOTHING_CREATED)
+            echo "project environment has been set up"
+            parse_args --post $@
+            ;;
+        *)  echo '-->' failure
+            ;;
+    esac
+
+# Cleanup variables and functions that are no longer needed after setup.
+# Keep P[] array and functions used as commands: show, mk, wipe, command.
+unset is_zsh script_ RC_HELP_MSG RC_NOTHING_CREATED \
+        created_vars created_files created_funcs
+# 
+# keep functions: show, mk, wipe, command
+# keep functions: prepare_manifest, packaged_content since they are
+# needed after configuration for packaging .jar files
+unset -f discover_env configure_env parse_args locate_libs parse_module_name \
+        is_project_directory realpath_ cygpath_ print_created_assets
+# 
+return 0
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# Template sections extracted by the template() function separated between
+# markers: # '^# -- section-indicator$' and '^# --$'. @vars are included in
+# output for substitution with actual values.
+# 
+# The .classpath file has the following sections:
+# - .classpath.start        ; @target, @src, @classes
+# - .classpath.res          ; @resources, @resources-output
+# - .classpath.tests        ; @tests, @test-classes
+# - .classpath.jre          ; 
+# - .classpath.jre.mod      ; 
+# - .classpath-entry        ; @jar
+# - .classpath-entry.mod    ; @jar
+# - .classpath.end
+# - - - - - - - - - - - - - - - - - - -
+# 
+# .classpath file, first section
+# -- .classpath-start
 # <?xml version="1.0" encoding="UTF-8"?>
 # <classpath>
-#     <classpathentry kind="output" path="@target"/>
-#     <classpathentry kind="src" path="src" output="@classes"/>
-#     <classpathentry kind="src" path="resources" output="@resources" including="**/*.properties|**/*.yaml|**/*.yml"/>
-#     <classpathentry kind="src" path="tests" output="@test-classes">
-#         <attributes>
-#             <attribute name="test" value="true"/>
-#         </attributes>
-#     </classpathentry>
-#     <classpathentry kind="con" path="org.eclipse.jdt.launching.JRE_CONTAINER">
-#         <attributes>
-#             <attribute name="module" value="true"/>
-#         </attributes>
-#     </classpathentry>
-#     <classpathentry kind="con" path="org.eclipse.jdt.junit.JUNIT_CONTAINER/5">
-#         <attributes>
-#             <attribute name="module" value="true"/>
-#         </attributes>
-#     </classpathentry>
-# --
-# -- .classpath-entry
-# <classpathentry kind="lib" path="@jar">
+#   <classpathentry kind="output" path="@target"/>
+#   <classpathentry kind="src" path="@src" output="@classes"/>
+# --- .classpath.res
+#   <classpathentry kind="src" path="@res" output="@res-out" including="**/*.properties|**/*.yaml|**/*.yml"/>
+# ---
+# --- .classpath.tests
+#   <classpathentry kind="src" path="@tests" output="@test-classes">
 #     <attributes>
-#         <attribute name="module" value="true"/>
+#       <attribute name="test" value="true"/>
 #     </attributes>
-# </classpathentry>
+#   </classpathentry>
+# ---
+# --- .classpath-jre
+#   <classpathentry kind="con" path="org.eclipse.jdt.launching.JRE_CONTAINER"/>
+#   <classpathentry kind="con" path="org.eclipse.jdt.junit.JUNIT_CONTAINER/5"/>
+# ---
+# --- .classpath-jre.mod
+#   <classpathentry kind="con" path="org.eclipse.jdt.launching.JRE_CONTAINER">
+#     <attributes>
+#        <attribute name="module" value="true"/>
+#     </attributes>
+#   </classpathentry>
+#   <classpathentry kind="con" path="org.eclipse.jdt.junit.JUNIT_CONTAINER/5">
+#     <attributes>
+#        <attribute name="module" value="true"/>
+#     </attributes>
+#   </classpathentry>
+# ---
 # --
+
+# .classpath file, second section
+# -- .classpath-entry
+#   <classpathentry kind="lib" path="@jar"/>
+# --
+# -- .classpath-entry.mod
+#   <classpathentry kind="lib" path="@jar">
+#     <attributes>
+#       <attribute name="module" value="true"/>
+#     </attributes>
+#   </classpathentry>
+# --
+
+# .classpath file, third section
 # -- .classpath-end
 # </classpath>
 # --
+
 # -- .project
 # <?xml version="1.0" encoding="UTF-8"?>
 # <projectDescription>
-#     <name>$name</name>
-#     <comment></comment>
-#     <projects>
-#     </projects>
-#     <buildSpec>
-#         <buildCommand>
-#             <name>org.eclipse.jdt.core.javabuilder</name>
-#             <arguments></arguments>
-#         </buildCommand>
-#     </buildSpec>
-#     <natures>
-#         <nature>org.eclipse.jdt.core.javanature</nature>
-#     </natures>
+#   <name>$name</name>
+#   <comment></comment>
+#   <projects>
+#   </projects>
+#   <buildSpec>
+#     <buildCommand>
+#       <name>org.eclipse.jdt.core.javabuilder</name>
+#       <arguments></arguments>
+#     </buildCommand>
+#   </buildSpec>
+#   <natures>
+#     <nature>org.eclipse.jdt.core.javanature</nature>
+#   </natures>
 # </projectDescription>
 # --
-# -- CLASSPATH-entries
+
+# -- CLASSPATH-entries (not used)
 # bin/classes
 # bin/resources
 # libs/jackson/jackson-annotations-2.19.0.jar
@@ -548,7 +959,7 @@ unset -f setup created
 # libs/logging/slf4j-api-2.0.17.jar
 # libs/lombok/lombok-1.18.38.jar
 # --
-# -- JUNIT_CLASSPATH-entries
+# -- JUNIT_CLASSPATH-entries (not used)
 # bin/classes
 # bin/test-classes
 # bin/resources
