@@ -181,7 +181,7 @@ function discover_env() {
             for jar in "${jars[@]}"; do
                 case "$jar" in
                 */junit-platform-console-standalone*.jar) P[junit-runner]="$jar"; local addjunitjar="true" ;;
-                */jacocoagent*.jar) P[cov-agent]="$jar"; local addjunitjar="true" ;;
+                */jacocoagent*.jar) [ "${P[tests]}" ] && P[cov-agent]="$jar"; local addjunitjar="true" ;;
                 */jacococli*.jar) P[cov-report-gen]="$jar"; local addjunitjar="true" ;;
                 */junit/junit-jupiter-api*) local addjar2="true" ;;
                 */junit/*) ;;
@@ -426,12 +426,10 @@ function command() {
         ;;
 
     run)
-        # alternative main class can be passed as first argument
-        [ $# -gt 0 ] && local main="$1" && shift || local main="${P[main]}"
-        if [ "$main" ]; then
+        if [ "${P[main]}" ]; then
             [ "${P[module]}" ] &&
-                echo "java -p \$MODULEPATH -m \"${P[module]}/$main\" ${args[@]}" ||
-                echo "java \"$main\" ${args[@]}"
+                echo "java -p \$MODULEPATH -m \"${P[module]}/${P[main]}\" ${args[@]}" ||
+                echo "java \"${P[main]}\" ${args[@]}"
         else
             echo "echo no main class to execute"
         fi ;;
@@ -477,7 +475,7 @@ function command() {
         ;;
 
     run-jar)
-        echo "java -jar \"${P[target-jar]}\""
+        echo "java -jar \"${P[target-jar]}\" ${args[@]}"
         ;;
 
     javadoc|javadocs|docs|doc)
