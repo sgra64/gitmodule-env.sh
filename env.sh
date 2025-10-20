@@ -15,7 +15,7 @@
 # Project files created for VSCode and eclipse IDE, 'libs' link:
 #  - libs -> <path-to-libs>     ; link created to 'libs' directory
 #  - .classpath, .project       ; used to set up the VSCode Java extension
-#  - .coderunner_launch         ; VS Code Java Code Runner launch file
+#  - .vscode/launch-coderunner  ; VS Code Java Code Runner launch file
 # 
 # Executable functions:
 # \\
@@ -326,14 +326,14 @@ function configure_env() {
             -e '/^# --$/,$d' \
             -e 's/^# //' < "${P[script]}" > $pd.project; created_files+=("$pd.project")
     fi
-    if [ ! -f $pd.coderunner_launch ]; then
-        # create code runner java @.coderunner_launch file
+    if [ -d .vscode -a ! -f $pd.vscode/launch-coderunner ]; then
+        # create code runner java @.vscode/launch-coderunner file
         [ -z "${P[module]}" ] &&
-            echo -e "-cp \"$CLASSPATH\"\\n    ${P[main]}" > $pd.coderunner_launch ||
+            echo -e "-cp \"$CLASSPATH\"\\n    ${P[main]}" > $pd.vscode/launch-coderunner ||
             echo -e "-cp \"$CLASSPATH\"\\n -p \"$MODULEPATH\"\\n -m ${P[module]}/${P[main]}" \
-            > $pd.coderunner_launch
+            > $pd.vscode/launch-coderunner
         # 
-        created_files+=("$pd.coderunner_launch")
+        created_files+=("$pd.vscode/launch-coderunner")
     fi
     # return 0 if anything was created, otherwise return marker $RC_NOTHING_CREATED
     # to print "project environment has been set up"
@@ -601,7 +601,7 @@ if ! typeset -f wipe >/dev/null; then
             CLASSPATH MODULEPATH JUNIT_CLASSPATH JUNIT_OPTIONS JDK_JAVAC_OPTIONS \
             JDK_JAVADOC_OPTIONS JAR_PACKAGE_LIBS JACOCO_AGENT_OPTIONS \
         )
-        local wipe_files=(.classpath .project .coderunner_launch)
+        local wipe_files=(.classpath .project)
         local wipe_funcs=(command show mk wipe prepare_manifest packaged_content)
         # 
         local rm_vars=(); local rm_files=(); local rm_funcs=()
