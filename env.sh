@@ -421,7 +421,8 @@ function command() {
 
     compile-tests)
         [ -d "${P[tests]}" ] &&
-            echo "javac -cp \$JUNIT_CLASSPATH \$(find ${P[tests]} -name '*.java') -d ${P[target-tests]} ${args[@]}" ||
+            echo "javac -cp \$JUNIT_CLASSPATH \$(find ${P[tests]} -name '*.java') \\" &&
+            echo "  -d ${P[target-tests]} ${args[@]}" ||
             echo "echo no tests present"
         ;;
 
