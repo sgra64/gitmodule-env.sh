@@ -483,7 +483,7 @@ function command() {
         if [ -d "${P[src]}" ]; then
             echo "javadoc \$(eval echo \$JDK_JAVADOC_OPTIONS) \\"
             echo "  \$(builtin cd ${P[src]} &&"
-            echo "     find -type d | sed -e 's!^[\./]*!!' -e 's!/!.!g') &&"
+            echo "     find . -type d | sed -e 's!^[\./]*!!' -e 's!/!.!g') &&"
             echo "  echo -e \"-->\\\ncreated javadoc in: \${P[docs]}\""
         else
             echo "echo no source files present"
@@ -764,12 +764,15 @@ function is_project_directory() {
 }
 
 function realpath_() {
+    case "$1" in
+    --relative-to)  [ "${P[is-zsh]}" ] && shift ;;  # remove '--relative-to' for zsh
+    esac
     if [ "${P[has-realpath]}" ]; then
-        /usr/bin/realpath $@
+        realpath $@
     else
-        # obtain last arg in $@ arguments
-        [ "${P[is-zsh]}" ] && local last_arg=${@:$#} || local last_arg="${!#}"
-        echo $last_arg
+        # [ "${P[is-zsh]}" ] && local last_arg=${@:$#} || local last_arg="${!#}"
+        # echo $last_arg
+        echo $@
     fi
 }
 
