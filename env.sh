@@ -76,6 +76,7 @@ declare -gA P=(
     [target-jar]="target/application-1.0.0-SNAPSHOT.jar"    # packaged application as fat .jar
     # 
     [logs]="logs"               # directory to store log files
+    [src-delomboked]="target/src-delomboked"    # de-lomboked source code from 'src/main'
     [docs]="target/docs"        # directory the javadoc compiler stores javadocs
     [cov]="target/coverage"                 # directory for jacoco.agent to store coverage files
     [cov-file]="target/coverage/jacoco.exec"    # file created by the jacoco.agent
@@ -90,6 +91,7 @@ declare -gA P=(
     [jars]=""                   # .jar files found in libs, used by CLASSPATH
     [junit-jars]=""             # .jar files from libs for JUnit testing, used by JUNIT_CLASSPATH
     [junit-runner]=""           # .jar file found in libs for the JUnit test runner
+    [lombok-jar]=""             # .jar for lombok code injection, e.g. 'libs/lombok/lombok-1.18.38.jar'
     # 
     [script]="${BASH_SOURCE[0]}"    # name of this script file
     [is-zsh]="$is_zsh"          # empty if executing shell is not zsh
@@ -183,6 +185,7 @@ function discover_env() {
                 */junit-platform-console-standalone*.jar) P[junit-runner]="$jar"; local addjunitjar="true" ;;
                 */jacocoagent*.jar) [ "${P[tests]}" ] && P[cov-agent]="$jar"; local addjunitjar="true" ;;
                 */jacococli*.jar) P[cov-report-gen]="$jar"; local addjunitjar="true" ;;
+                */lombok*.jar) P[lombok-jar]="$jar"; local addjar="true" ;;
                 */junit/junit-jupiter-api*) local addjar2="true" ;;
                 */junit/*) ;;
                 */jacoco/*) local addjunitjar="true"; has_mod="true" ;;
@@ -239,10 +242,9 @@ function configure_env() {
         export JDK_JAVAC_OPTIONS="$javac_opts"; created_vars+=(JDK_JAVAC_OPTIONS)
     fi
     if [ -z "$JDK_JAVADOC_OPTIONS" ]; then
-        local javadoc_opts="--source-path ${P[src]} -d ${P[docs]}"
-        [ "${P[module]}" ] && javadoc_opts+=" --module-path \"$MODULEPATH\""
-        javadoc_opts+=" -version -author -Xdoclint:-missing -noqualifier \"java.*:application.*:datamodel.*:system.*\""
-        # 
+        local javadoc_opts=""
+        [ "${P[module]}" ] && javadoc_opts="--module-path \"\$MODULEPATH\" "
+        javadoc_opts+="-version -author -Xdoclint:-missing"
         export JDK_JAVADOC_OPTIONS="$javadoc_opts"; created_vars+=(JDK_JAVADOC_OPTIONS)
     fi
     if [ -z "$JAR_PACKAGE_LIBS" -a "${P[pckg-libs]}" ]; then
@@ -471,7 +473,7 @@ function command() {
         [ "$manifest" ] && echo "  --manifest=$manifest \\"
         echo "  -C ${P[target-cls]} . \$(packaged_content$sp$include_jars) &&"
         echo "  [ -f \${P[target-jar]} ] &&"
-        echo "    echo -e \"-->\\\ncreated: \${P[target-jar]}\" ||"
+        echo "    echo -e \"-->\\\ncreated: ${P[target-jar]}\" ||"
         echo "    echo -e \"-->\\\nno compiled classes or manifest, no .jar created\""
         ;;
 
@@ -479,14 +481,37 @@ function command() {
         echo "java -jar \"${P[target-jar]}\" ${args[@]}"
         ;;
 
-    javadoc|javadocs|docs|doc)
-        if [ -d "${P[src]}" ]; then
-            echo "javadoc \$(eval echo \$JDK_JAVADOC_OPTIONS) \\"
-            echo "  \$(builtin cd ${P[src]} &&"
-            echo "     find . -type d | sed -e 's!^[\./]*!!' -e 's!/!.!g') &&"
-            echo "  echo -e \"-->\\\ncreated javadoc in: \${P[docs]}\""
+    de-lombok|delombok)
+        if [ "${P[lombok-jar]}" -a -d "${P[src]}" ]; then
+            [ "${P[module]}" ] && local mod="--module-path \"\$MODULEPATH\" "
+            echo "rm -rf ${P[src-delomboked]} &&"
+            echo "java -jar ${P[lombok-jar]} delombok \\"
+            echo "  $mod${P[src]} -d ${P[src-delomboked]} &&"
+            echo "  echo \"de-lomboked '"${P[src]}"' to '"${P[src-delomboked]}"'\""
         else
-            echo "echo no source files present"
+            echo "echo no source files to de-lombok"
+        fi
+        ;;
+
+    javadoc|javadocs|docs|doc)
+        # pick source to javadoc, either 'src/main' or 'target/src-delomboked'
+        [ -d "${P[src-delomboked]}" ] && local src="${P[src-delomboked]}" || local src="${P[src]}"
+        # 
+        if [ -d "$src" ]; then
+            # collect packages to javadoc, e.g.: "application datamodel.customer" and set up
+            # 'noqualifier' flag, e.g. "java.*:application.*:datamodel.*"
+            local p=$(builtin cd $src && find * -type d | tr '/\n' '. ')
+            local packages=${p%"${p##*[![:space:]]}"}   # trim trailing spaces
+            local noqualifiers=$(builtin cd $src && find * -maxdepth 0 -type d | sed -e 's!.*!:&.*!' | tr -d '\n')
+            # 
+            echo "rm -rf ${P[docs]} &&"
+            echo "javadoc --source-path $src -d ${P[docs]} \\"
+            echo "  $(eval echo \$JDK_JAVADOC_OPTIONS) \\"
+            echo "  -noqualifier \"java.*$noqualifiers\" \\"
+            echo "  $packages &&"
+            echo "  echo -e \"-->\\\ncreated javadoc in: '"${P[docs]}"'\""
+        else
+            echo "echo no source files present for javadoc"
         fi ;;
     esac
 }
@@ -532,7 +557,7 @@ if ! typeset -f mk >/dev/null; then
                 arg=${arg/ /}       # remove leading ' ' appearing in zsh
                 case "$arg" in
                 # commands separate commands from arguments
-                build|clean|compile|compile-tests|run|run-tests|coverage|coverage-report|package|jar|run-jar|javadoc|javadocs|docs|doc)
+                build|clean|compile|compile-tests|run|run-tests|coverage|coverage-report|package|jar|run-jar|de-lombok|javadoc|javadocs|docs|doc)
                     [ -z "$cmd" ] && cmd="$arg" || execute=true ;;
                 # 
                 # collect per-command arguments
@@ -765,14 +790,13 @@ function is_project_directory() {
 
 function realpath_() {
     case "$1" in
-    --relative-to)  [ "${P[is-zsh]}" ] && shift ;;  # remove '--relative-to' for zsh
+    --relative-to)  [ "${P[is-zsh]}" ] && shift ;;  # ignore flag '--relative-to' for zsh
     esac
     if [ "${P[has-realpath]}" ]; then
-        realpath $@
+        realpath $@     # output the real filesystem path with links traced
     else
         # [ "${P[is-zsh]}" ] && local last_arg=${@:$#} || local last_arg="${!#}"
-        # echo $last_arg
-        echo $@
+        echo $@         # output unchanged path
     fi
 }
 
