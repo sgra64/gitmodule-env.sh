@@ -627,7 +627,7 @@ if ! typeset -f wipe >/dev/null; then
             CLASSPATH MODULEPATH JUNIT_CLASSPATH JUNIT_OPTIONS JDK_JAVAC_OPTIONS \
             JDK_JAVADOC_OPTIONS JAR_PACKAGE_LIBS JACOCO_AGENT_OPTIONS \
         )
-        local wipe_files=(.classpath .project)
+        local wipe_files=(.classpath .project .vscode/launch-coderunner)
         local wipe_funcs=(command show mk wipe prepare_manifest packaged_content)
         # 
         local rm_vars=(); local rm_files=(); local rm_funcs=()
