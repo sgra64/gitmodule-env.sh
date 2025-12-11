@@ -35,6 +35,7 @@
 #  - package|jar [--package-libs|--fat-jar] ; package compiled code into .jar
 #  - run-jar                    ; run the packaged .jar
 #  - javadoc|javadocs|docs|doc  ; create Javadoc
+#  - delombok                   ; delombok 'src/main' to 'target/delombok'
 # 
 # Usage:
 #  - source env.sh [-v] [-e]    ; -v verbose show discovered assets
@@ -76,7 +77,7 @@ declare -gA P=(
     [target-jar]="target/application-1.0.0-SNAPSHOT.jar"    # packaged application as fat .jar
     # 
     [logs]="logs"               # directory to store log files
-    [src-delomboked]="target/src-delomboked"    # de-lomboked source code from 'src/main'
+    [delombok]="target/delombok"      # de-lomboked source code from 'src/main'
     [docs]="target/docs"        # directory the javadoc compiler stores javadocs
     [cov]="target/coverage"                 # directory for jacoco.agent to store coverage files
     [cov-file]="target/coverage/jacoco.exec"    # file created by the jacoco.agent
@@ -483,19 +484,28 @@ function command() {
 
     de-lombok|delombok)
         if [ "${P[lombok-jar]}" -a -d "${P[src]}" ]; then
-            [ "${P[module]}" ] && local mod="--module-path \"\$MODULEPATH\" "
-            echo "rm -rf ${P[src-delomboked]} &&"
-            echo "java -jar ${P[lombok-jar]} delombok \\"
-            echo "  $mod${P[src]} -d ${P[src-delomboked]} &&"
-            echo "  echo \"de-lomboked '"${P[src]}"' to '"${P[src-delomboked]}"'\""
+            # 
+            # disable 'module-info.java' since delombok does not work with 'com.fasterxml.jackson' module
+            [ -f "${P[module-info]}" ] && local moduleinfo="${P[module-info]}"
+            # 
+            echo "rm -rf ${P[delombok]} &&"
+            [ "$moduleinfo" ] && echo "mv '"$moduleinfo"' '"$moduleinfo.BAK"' &&"
+            echo "(java -jar ${P[lombok-jar]} delombok \\"
+            echo "  ${P[src]} -d ${P[delombok]} --format=pretty --encoding=\"UTF-8\" \\"
+            [ "${P[module]}" ] && echo "  --module-path=\"\$MODULEPATH\" \\"
+            echo "  --classpath=\"\$CLASSPATH\" 2>&1 | head -30 >/dev/tty) &&"
+            # 
+            # retore 'module-info.java'
+            [ "$moduleinfo" ] && echo "mv '"$moduleinfo.BAK"' '"$moduleinfo"' &&"
+            echo "echo \"de-lomboked '"${P[src]}"' to '"${P[delombok]}"'\""
         else
-            echo "echo no source files to de-lombok"
+            echo "echo no .jar: \"libs/lombok/lombok-{version}.jar\" or no \"${P[src]}\" to de-lombok"
         fi
         ;;
 
     javadoc|javadocs|docs|doc)
         # pick source to javadoc, either 'src/main' or 'target/src-delomboked'
-        [ -d "${P[src-delomboked]}" ] && local src="${P[src-delomboked]}" || local src="${P[src]}"
+        [ -d "${P[delombok]}" ] && local src="${P[delombok]}" || local src="${P[src]}"
         # 
         if [ -d "$src" ]; then
             # collect packages to javadoc, e.g.: "application datamodel.customer" and set up
