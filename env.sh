@@ -55,10 +55,14 @@
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # ISSUES:
 # - (#001) 'realpath' is not available on Mac -> install 'brew' and 'coreutils'
-#   see: https://formulae.brew.sh/formula/coreutils
+#   see: https://formulae.brew.sh/formula/coreutils.
 # 
 # - (#002) 'realpath' does not support flag '--relative-to' on Mac -> absorbed
-#   flag in realpath_ function, alternatively remove use of flag
+#   flag in realpath_ function, alternatively remove use of flag.
+# 
+# - (#003) lombok does not work with 'com.fasterxml.jackson' modules, remove
+#   dependency from 'module-info.java' for 'mk delombok', must also delete all
+#   'com.fasterxml.jackson' imports, e.g. from 'ContactsSplitterImpl.java'.
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 # Disables zsh to output ANSI escape characters in sub-processes: $(find ...)
@@ -493,21 +497,25 @@ function command() {
         echo "java -jar \"${P[target-jar]}\" ${args[@]}"
         ;;
 
-    de-lombok|delombok)
+    lombok|delombok|de-lombok)
         if [ "${P[lombok-jar]}" -a -d "${P[src]}" ]; then
-            # 
-            # disable 'module-info.java' since delombok does not work with 'com.fasterxml.jackson' module
-            [ -f "${P[module-info]}" ] && local moduleinfo="${P[module-info]}"
-            # 
             echo "rm -rf ${P[delombok]} &&"
-            [ "$moduleinfo" ] && echo "mv '"$moduleinfo"' '"$moduleinfo.BAK"' &&"
+            # 
+            # remove 'fasterxml' dependencies from 'module-info.java' since delombok
+            # does not work with 'com.fasterxml.jackson' modules
+            [ -f "${P[module-info]}" ] &&
+                local moduleinfo="${P[module-info]}" &&
+                echo "mv $moduleinfo $moduleinfo.BAK &&" &&
+                echo "grep -v fasterxml $moduleinfo.BAK > $moduleinfo &&"
+            # 
             echo "(java -jar ${P[lombok-jar]} delombok \\"
             echo "  ${P[src]} -d ${P[delombok]} --format=pretty --encoding=\"UTF-8\" \\"
             [ "${P[module]}" ] && echo "  --module-path=\"\$MODULEPATH\" \\"
             echo "  --classpath=\"\$CLASSPATH\" 2>&1 | head -30 >/dev/tty) &&"
             # 
             # retore 'module-info.java'
-            [ "$moduleinfo" ] && echo "mv '"$moduleinfo.BAK"' '"$moduleinfo"' &&"
+            [ "$moduleinfo" ] && echo "mv $moduleinfo.BAK $moduleinfo &&"
+            # 
             echo "echo \"de-lomboked '"${P[src]}"' to '"${P[delombok]}"'\""
         else
             echo "echo no .jar: \"libs/lombok/lombok-{version}.jar\" or no \"${P[src]}\" to de-lombok"
@@ -530,7 +538,7 @@ function command() {
             echo "  $(eval echo \$JDK_JAVADOC_OPTIONS) \\"
             echo "  -noqualifier \"java.*$noqualifiers\" \\"
             echo "  $packages &&"
-            echo "  echo -e \"-->\\\ncreated javadoc in: '"${P[docs]}"'\""
+            echo "  echo -e \"-->\\\ncreated javadoc in: '"${P[docs]}/index.html"'\""
         else
             echo "echo no source files present for javadoc"
         fi ;;
@@ -579,7 +587,7 @@ if ! typeset -f mk >/dev/null; then
                 arg=${arg/ /}       # remove leading ' ' appearing in zsh
                 case "$arg" in
                 # commands separate commands from arguments
-                build|clean|compile|compile-tests|run|run-tests|coverage|coverage-report|package|jar|run-jar|de-lombok|javadoc|javadocs|docs|doc)
+                build|clean|compile|compile-tests|run|run-tests|coverage|coverage-report|package|jar|run-jar|lombok|de-lombok|javadoc|javadocs|docs|doc)
                     [ -z "$cmd" ] && cmd="$arg" || execute=true ;;
                 # 
                 # collect per-command arguments
