@@ -40,6 +40,9 @@
 # Usage:
 #  - source env.sh [-v] [-e]    ; -v verbose show discovered assets
 #                               ; -e show values of environment variables
+#  - mk --version               ; show version
+#  - mk --help                  ; show help
+# 
 # Tests:
 #  - mk build; cat target/resources/META-INF/MANIFEST.MF; mk package --package-libs
 #  - mk run run-jar run; mk javadoc coverage coverage-report run
@@ -47,8 +50,15 @@
 # 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # Revision information:
-# @version: 1.3.0
+# @version: 1.4.0
 # @author: sgraupner
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# ISSUES:
+# - (#001) 'realpath' is not available on Mac -> install 'brew' and 'coreutils'
+#   see: https://formulae.brew.sh/formula/coreutils
+# 
+# - (#002) 'realpath' does not support flag '--relative-to' on Mac -> absorbed
+#   flag in realpath_ function, alternatively remove use of flag
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 
 # Disables zsh to output ANSI escape characters in sub-processes: $(find ...)
@@ -57,6 +67,7 @@
 
 declare -gA P=(
     # general assets
+    [version]="1.4.0"           # version number
     [pdir]="."                  # relative path to project directory
     [src]="src/main"            # Java source code, probed for existence
     [tests]="src/tests"         # Java unit tests, probed for existence
@@ -77,8 +88,8 @@ declare -gA P=(
     [target-jar]="target/application-1.0.0-SNAPSHOT.jar"    # packaged application as fat .jar
     # 
     [logs]="logs"               # directory to store log files
-    [delombok]="target/delombok"      # de-lomboked source code from 'src/main'
-    [docs]="target/docs"        # directory the javadoc compiler stores javadocs
+    [delombok]="target/delombok"            # target for code de-lomboked from 'src/main'
+    [docs]="target/javadoc"     # directory the javadoc compiler stores javadocs
     [cov]="target/coverage"                 # directory for jacoco.agent to store coverage files
     [cov-file]="target/coverage/jacoco.exec"    # file created by the jacoco.agent
     [cov-report]="target/coverage-report"       # output directory for coverage report (HTML)
@@ -552,7 +563,8 @@ if ! typeset -f mk >/dev/null; then
         # 
         for arg in $@; do case "$arg" in
         --show) local show_only=true ;;
-        --help) echo "mk [--show] cmd [args] cmd [args] ..."; return 0 ;;
+        --version) echo "mk version ${P[version]}"; return 0 ;;
+        --help) echo "mk [--show|--version] { cmd [args] }*"; return 0 ;;
         *) args+=($sp$arg); sp=" " ;;
         esac; done
         # 
@@ -799,8 +811,9 @@ function is_project_directory() {
 }
 
 function realpath_() {
+    # disable '--relative-to' for Mac since realpath on Mac does not support it
     case "$1" in
-    --relative-to)  [ "${P[is-zsh]}" ] && shift ;;  # ignore flag '--relative-to' for zsh
+    --relative-to*) [ "${P[is-zsh]}" ] && shift ;;  # absorb flag '--relative-to' for zsh
     esac
     if [ "${P[has-realpath]}" ]; then
         realpath $@     # output the real filesystem path with links traced
