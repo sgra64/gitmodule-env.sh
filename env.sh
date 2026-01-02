@@ -501,22 +501,24 @@ function command() {
         if [ "${P[lombok-jar]}" -a -d "${P[src]}" ]; then
             echo "rm -rf ${P[delombok]} &&"
             # 
-            # remove 'fasterxml' dependencies from 'module-info.java' since delombok
-            # does not work with 'com.fasterxml.jackson' modules
+            # [BUG] delombok is not Working with Modules #2829 (2021)
+            # https://github.com/projectlombok/lombok/issues/2829
+            # FIX: hide 'module-info.java' for 'delombok'
             [ -f "${P[module-info]}" ] &&
                 local moduleinfo="${P[module-info]}" &&
                 echo "mv $moduleinfo $moduleinfo.BAK &&" &&
-                echo "grep -v fasterxml $moduleinfo.BAK > $moduleinfo &&"
             # 
-            echo "(java -jar ${P[lombok-jar]} delombok \\"
+            echo "java -jar ${P[lombok-jar]} delombok \\"
             echo "  ${P[src]} -d ${P[delombok]} --format=pretty --encoding=\"UTF-8\" \\"
             [ "${P[module]}" ] && echo "  --module-path=\"\$MODULEPATH\" \\"
-            echo "  --classpath=\"\$CLASSPATH\" 2>&1 | head -30 >/dev/tty) &&"
+            echo "  --classpath=\"\$CLASSPATH\" 2>&1 | head -30 >/dev/tty;"
             # 
-            # retore 'module-info.java'
-            [ "$moduleinfo" ] && echo "mv $moduleinfo.BAK $moduleinfo &&"
+            # restore 'module-info.java' from 'module-info.java.BAK'
+            echo "[ -f $moduleinfo.BAK ] &&"
+            echo "  mv $moduleinfo.BAK $moduleinfo;"
             # 
             echo "echo \"de-lomboked '"${P[src]}"' to '"${P[delombok]}"'\""
+            # 
         else
             echo "echo no .jar: \"libs/lombok/lombok-{version}.jar\" or no \"${P[src]}\" to de-lombok"
         fi
