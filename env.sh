@@ -746,11 +746,13 @@ function prepare_manifest() {
         if [ -z "$(grep 'Class-Path:' $manifest)" ]; then
             # add resources and libs from $JAR_PACKAGE_LIBS, if present (keep space after "${P[res]} ")
             echo "Class-Path: resources " >> "$manifest"
-            [ "$1" = "--include-libs" ] && local filter="cat" || local filter="grep -v '.jar'"
+        fi
+            # [ "$1" = "--include-libs" ] && local filter="cat" || local filter="grep -v '.jar'"
+            filter="cat"    # always include libs in 'target/resources/META-INF/MANIFEST.MF/Class-Path:'
             sed -e 's/-C[[:space:]][a-zA-Z0-9_./\-]*[[:space:]]//g' \
                 -e 's/[[:space:]]/\n    /g' \
                 -e 's/^/    /' <<< $JAR_PACKAGE_LIBS | eval $filter >> "$manifest"
-        fi
+        # fi
         echo $manifest
     fi; return 0
 }
