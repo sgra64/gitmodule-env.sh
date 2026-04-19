@@ -286,8 +286,9 @@ function configure_env() {
             done; unset IFS
             export JUNIT_CLASSPATH="$cp"; created_vars+=(JUNIT_CLASSPATH)
         fi
-        [ -z "$JUNIT_OPTIONS" ] && \
-            export JUNIT_OPTIONS="--details-theme=unicode" && created_vars+=(JUNIT_OPTIONS)
+        # # JUNIT5 runner
+        # [ -z "$JUNIT_OPTIONS" ] && \
+        #     export JUNIT_OPTIONS="--details-theme=unicode" && created_vars+=(JUNIT_OPTIONS)
     fi
     if [ "${P[cov-agent]}" -a -z "$JACOCO_AGENT_OPTIONS" ]; then
         local jacopts="-javaagent:${P[cov-agent]}=output=file,destfile=${P[cov-file]}"
@@ -380,7 +381,7 @@ function parse_args() {
         echo "- CLASSPATH:;$CLASSPATH" | sed -e 's/;/\n  + /g'; echo
         echo "- JUNIT_CLASSPATH:;$JUNIT_CLASSPATH" | sed -e 's/;/\n  + /g'; echo
         echo "- MODULEPATH:;$MODULEPATH" | sed -e 's/;/\n  + /g'; echo
-        echo "- JUNIT_OPTIONS: $JUNIT_OPTIONS"; echo
+        # echo "- JUNIT_OPTIONS: $JUNIT_OPTIONS"; echo
         echo "- JDK_JAVAC_OPTIONS: $JDK_JAVAC_OPTIONS"; echo
         echo "- JDK_JAVADOC_OPTIONS: $JDK_JAVADOC_OPTIONS"; echo
         echo "- JAR_PACKAGE_LIBS: $JAR_PACKAGE_LIBS"
@@ -458,9 +459,16 @@ function command() {
             echo "java -cp \$JUNIT_CLASSPATH \\"
             [ "$cov_opts" ] && echo "  $cov_opts \\"
             echo "  org.junit.platform.console.ConsoleLauncher \$JUNIT_OPTIONS \\"
-            # [ ${#args[@]} -gt 0 ] && echo "  ${args[@]}" || echo "  --scan-class-path"
-            [ ${#args[@]} -gt 0 ] && echo "  $args" || echo "  --scan-class-path"
-            # [ ${#args[@]} -gt 0 ] && echo "  -c application.Application_0_always_pass_Tests" || echo "  --scan-class-path"
+            # JUnit5: junit-platform-console-standalone-1.9.2.jar used:
+            # - --scan-classpath
+            # - --select-class application.Application_0_always_pass_Tests
+            # - -c application.Application_0_always_pass_Tests
+            # 
+            # JUnit6: junit-platform-console-standalone-6.1.0-M1.jar uses:
+            # - discover --scan-classpath (does not execute tests, only discovers and prints)
+            # - execute --select-class application.Application_0_always_pass_Tests
+            # - execute -c application.Application_0_always_pass_Tests
+            [ ${#args[@]} -gt 0 ] && echo "  execute $args" || echo "execute --scan-classpath"
         else
             echo "echo no tests present"
         fi ;;
