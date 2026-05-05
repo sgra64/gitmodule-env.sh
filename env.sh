@@ -77,6 +77,7 @@ declare -gA P=(
     [tests]="src/tests"         # Java unit tests, probed for existence
     [res]="src/resources"       # none-Java sources, config files etc., probed for existence
     [manifest]="META-INF/MANIFEST.MF"
+    [application-properties]="application.properties"
     [libs]="libs"               # located and created, if not exists
     [libs-search]=".. ../.. ../../.. branches ../branches"
     [module]=""                 # module name from 'module-info.java'
@@ -490,16 +491,33 @@ function command() {
         ;;
 
     package|jar)
-        [ "$include_jars" ] && local sp=" "
-        local manifest=$(prepare_manifest $include_jars)
-        # 
-        echo "jar -c -v -f \"${P[target-jar]}\" \\"
-        [ "$manifest" ] && echo "  --manifest=$manifest \\"
-        echo "  -C ${P[target-cls]} . \$(packaged_content$sp$include_jars) &&"
-        echo "  [ -f \${P[target-jar]} ] &&"
-        echo "    echo -e \"-->\\\ncreated: ${P[target-jar]}\" ||"
-        echo "    echo -e \"-->\\\nno compiled classes or manifest, no .jar created\""
-        ;;
+        if [ -d "${P[target-cls]}" ]; then
+            # unpack 'runtime-SE.jar' to 'target/classes' to include into .jar file
+            (cd "${P[target-cls]}"; jar xf "../../${P[libs]}/runtime-SE/*.jar" runtimeSE/);
+            local manifest="${P[target-res]}/${P[manifest]}"    # 'target/resources/META-INF/MANIFEST.MF'
+            if [ -f "$manifest" ]; then
+                if [ "${P[main]}" -a -z "$(grep 'Main-Class:' $manifest)" ]; then
+                    # remove empty lines and append line with 'Main-Class: application.Application'
+                    (grep -v '^[[:space:]]*$' < "$manifest"; echo "Main-Class: ${P[main]}") > "$manifest".tmp
+                    mv "$manifest".tmp "$manifest"
+                fi
+                manifest="--manifest=$manifest"     # set with jar command: --manifest=target/resources/META-INF/MANIFEST.MF
+            else
+                manifest="--main-class=${P[main]}"  # set with jar command: --main-class=application.Application
+            fi
+            local approperties="${P[target-res]}/${P[application-properties]}"  # 'target/resources/application.properties'
+            [ -f "$approperties" ] && approperties=" -C ${P[target-res]} ${P[application-properties]}" || approperties=""
+            # 
+            echo "jar -c -f \"${P[target-jar]}\" \\"
+            echo "  $manifest \\"
+            echo "  -C ${P[target-cls]} .$approperties &&"
+            echo "  [ -f \${P[target-jar]} ] &&"
+            echo "    echo \"created: ${P[target-jar]}\" ||"
+            echo "    echo \"no compiled classes or manifest, no .jar created\""
+        else
+            echo "[ ! -d ${P[target-cls]} ] &&"
+            echo "  echo \"missing '${P[target-cls]}', compile code before packaging\""
+        fi ;;
 
     run-jar)
         echo "java -jar \"${P[target-jar]}\" ${args[@]}"
@@ -668,7 +686,8 @@ if ! typeset -f wipe >/dev/null; then
             JDK_JAVADOC_OPTIONS JAR_PACKAGE_LIBS JACOCO_AGENT_OPTIONS \
         )
         local wipe_files=(.classpath .project .vscode/launch-coderunner)
-        local wipe_funcs=(command show mk wipe prepare_manifest packaged_content)
+        # local wipe_funcs=(command show mk wipe prepare_manifest packaged_content)
+        local wipe_funcs=(command show mk wipe packaged_content)
         # 
         local rm_vars=(); local rm_files=(); local rm_funcs=()
         # 
@@ -724,48 +743,6 @@ if ! typeset -f wipe >/dev/null; then
     }
     created_funcs+=("wipe [--all|-a]")
 fi
-
-# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
-# Prepares 'target/resources/META-INF/MANIFEST.MF' by adding lines:
-#   Main-Class: application.Application
-#   Class-Path: resources 
-#     resources/application.properties
-#     resources/application.yaml
-#     resources/application.yml
-#     libs/jackson/jackson-annotations-2.19.0.jar (with --include-libs)
-#     libs/jackson/jackson-core-2.19.0.jar
-#     libs/jackson/jackson-databind-2.19.0.jar
-# Usage:
-#   prepare_manifest [--include-libs]
-# @Return path to MANIFEST.MF used from 'src/resources' or 'target/resources'
-# Function is needed after configuration to package .jar files, do not unset.
-# 
-function prepare_manifest() {
-    if [ "${P[manifest]}" ]; then
-        rm -rf "${P[target-res]}"
-        # fresh copy of "${P[res]}" to "${P[target-res]}" (entire folder)
-        mkdir -p "${P[target-res]}" && cp -R "${P[res]}" "${P[target-res]}/.."
-        local manifest="${P[target-res]}/${P[manifest]}"
-        # add 'Main-Class:' and 'Class-Path:' entries, if not present
-        # remove empty lines, -e '$a\Main-Class: '"${P[main]}"
-        sed -e '/^[[:space:]]*$/d' < "$manifest" > "$manifest.tmp" && mv "$manifest.tmp" "$manifest"
-        # 
-        if [ "${P[main]}" -a -z "$(grep 'Main-Class:' $manifest)" ]; then
-            echo "Main-Class: ${P[main]}" >> "$manifest"
-        fi
-        if [ -z "$(grep 'Class-Path:' $manifest)" ]; then
-            # add resources and libs from $JAR_PACKAGE_LIBS, if present (keep space after "${P[res]} ")
-            echo "Class-Path: resources " >> "$manifest"
-        fi
-            # [ "$1" = "--include-libs" ] && local filter="cat" || local filter="grep -v '.jar'"
-            filter="cat"    # always include libs in 'target/resources/META-INF/MANIFEST.MF/Class-Path:'
-            sed -e 's/-C[[:space:]][a-zA-Z0-9_./\-]*[[:space:]]//g' \
-                -e 's/[[:space:]]/\n    /g' \
-                -e 's/^/    /' <<< $JAR_PACKAGE_LIBS | eval $filter >> "$manifest"
-        # fi
-        echo $manifest
-    fi; return 0
-}
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 # Return content added to .jar as expected by the .jar command with adjusted
@@ -1016,31 +993,77 @@ return 0
 # --
 
 # -- CLASSPATH-entries (not used)
-# bin/classes
-# bin/resources
-# libs/jackson/jackson-annotations-2.19.0.jar
-# libs/jackson/jackson-core-2.19.0.jar
-# libs/jackson/jackson-databind-2.19.0.jar
-# libs/junit/junit-jupiter-api-5.12.2.jar
-# libs/logging/log4j-api-2.24.3.jar
-# libs/logging/log4j-core-2.24.3.jar
-# libs/logging/log4j-slf4j2-impl-2.24.3.jar
-# libs/logging/slf4j-api-2.0.17.jar
-# libs/lombok/lombok-1.18.38.jar
+# target/classes
+# target/resources
+# libs/jackson/jackson-annotations-2.21.jar
+# libs/jackson/jackson-core-2.21.0.jar
+# libs/jackson/jackson-databind-2.21.0.jar
+# libs/jspecify/jspecify-1.0.0.jar
+# libs/junit/junit-jupiter-api-6.1.0-M1.jar
+# libs/log4j/log4j-api-2.24.3.jar
+# libs/log4j/log4j-core-2.24.3.jar
+# libs/log4j/log4j-slf4j2-impl-2.24.3.jar
+# libs/log4j/slf4j-api-2.0.17.jar
+# libs/lombok/lombok-1.18.44.jar
+# libs/runtime-SE/runtimeSE-1.0.2-RELEASE.jar
 # --
 # -- JUNIT_CLASSPATH-entries (not used)
-# bin/classes
-# bin/test-classes
-# bin/resources
-# libs/jackson/jackson-annotations-2.19.0.jar
-# libs/jackson/jackson-core-2.19.0.jar
-# libs/jackson/jackson-databind-2.19.0.jar
+# target/classes
+# target/test-classes
+# target/resources
+# libs/jackson/jackson-annotations-2.21.jar
+# libs/jackson/jackson-core-2.21.0.jar
+# libs/jackson/jackson-databind-2.21.0.jar
 # libs/jacoco/jacocoagent.jar
 # libs/jacoco/jacococli.jar
-# libs/junit-platform-console-standalone-1.9.2.jar
-# libs/logging/log4j-api-2.24.3.jar
-# libs/logging/log4j-core-2.24.3.jar
-# libs/logging/log4j-slf4j2-impl-2.24.3.jar
-# libs/logging/slf4j-api-2.0.17.jar
-# libs/lombok/lombok-1.18.38.jar
+# libs/jspecify/jspecify-1.0.0.jar
+# libs/junit-platform-console-standalone-6.1.0-M1.jar
+# libs/log4j/log4j-api-2.24.3.jar
+# libs/log4j/log4j-core-2.24.3.jar
+# libs/log4j/log4j-slf4j2-impl-2.24.3.jar
+# libs/log4j/slf4j-api-2.0.17.jar
+# libs/lombok/lombok-1.18.44.jar
+# libs/runtime-SE/runtimeSE-1.0.2-RELEASE.jar
 # --
+
+# # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+# # Prepares 'target/resources/META-INF/MANIFEST.MF' by adding lines:
+# #   Main-Class: application.Application
+# #   Class-Path: resources 
+# #     resources/application.properties
+# #     resources/application.yaml
+# #     resources/application.yml
+# #     libs/jackson/jackson-annotations-2.19.0.jar (with --include-libs)
+# #     libs/jackson/jackson-core-2.19.0.jar
+# #     libs/jackson/jackson-databind-2.19.0.jar
+# # Usage:
+# #   prepare_manifest [--include-libs]
+# # @Return path to MANIFEST.MF used from 'src/resources' or 'target/resources'
+# # Function is needed after configuration to package .jar files, do not unset.
+# # 
+# function prepare_manifest() {
+#     if [ "${P[manifest]}" ]; then
+#         rm -rf "${P[target-res]}"
+#         # fresh copy of "${P[res]}" to "${P[target-res]}" (entire folder)
+#         mkdir -p "${P[target-res]}" && cp -R "${P[res]}" "${P[target-res]}/.."
+#         local manifest="${P[target-res]}/${P[manifest]}"
+#         # add 'Main-Class:' and 'Class-Path:' entries, if not present
+#         # remove empty lines, -e '$a\Main-Class: '"${P[main]}"
+#         sed -e '/^[[:space:]]*$/d' < "$manifest" > "$manifest.tmp" && mv "$manifest.tmp" "$manifest"
+#         # 
+#         if [ "${P[main]}" -a -z "$(grep 'Main-Class:' $manifest)" ]; then
+#             echo "Main-Class: ${P[main]}" >> "$manifest"
+#         fi
+#         if [ -z "$(grep 'Class-Path:' $manifest)" ]; then
+#             # add resources and libs from $JAR_PACKAGE_LIBS, if present (keep space after "${P[res]} ")
+#             echo "Class-Path: resources " >> "$manifest"
+#         fi
+#             # [ "$1" = "--include-libs" ] && local filter="cat" || local filter="grep -v '.jar'"
+#             filter="cat"    # always include libs in 'target/resources/META-INF/MANIFEST.MF/Class-Path:'
+#             sed -e 's/-C[[:space:]][a-zA-Z0-9_./\-]*[[:space:]]//g' \
+#                 -e 's/[[:space:]]/\n    /g' \
+#                 -e 's/^/    /' <<< $JAR_PACKAGE_LIBS | eval $filter >> "$manifest"
+#         # fi
+#         echo $manifest
+#     fi; return 0
+# }
