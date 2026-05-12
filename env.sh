@@ -422,7 +422,7 @@ function command() {
     case "$cmd" in
 
     build)
-        echo "mk clean compile compile-tests run-tests package"
+        echo "mk clean compile compile-tests run-tests javadoc package"
         ;;
 
     clean)
@@ -492,8 +492,16 @@ function command() {
 
     package|jar)
         if [ -d "${P[target-cls]}" ]; then
+            # 
             # unpack 'runtime-SE.jar' to 'target/classes' to include into .jar file
-            (cd "${P[target-cls]}"; jar xf "../../${P[libs]}/runtime-SE/*.jar" runtimeSE/);
+            # remove included libs after packaging or error "java.lang.module.ResolutionException:
+            # Module se1_play contains package runtimeSE, module runtimeSE exports package runtimeSE
+            # to se1_play" is thrown
+            local unpacked_libs="  rm -rf ${P[target-cls]}/runtimeSE ${P[target-cls]}/org"
+            ( cd "${P[target-cls]}"
+                jar xf "../../${P[libs]}/runtime-SE/*.jar" runtimeSE/
+                jar xf "../../${P[libs]}/jspecify/*.jar" org/
+            )
             local manifest="${P[target-res]}/${P[manifest]}"    # 'target/resources/META-INF/MANIFEST.MF'
             if [ -f "$manifest" ]; then
                 if [ "${P[main]}" -a -z "$(grep 'Main-Class:' $manifest)" ]; then
@@ -511,6 +519,7 @@ function command() {
             echo "jar -c -f \"${P[target-jar]}\" \\"
             echo "  $manifest \\"
             echo "  -C ${P[target-cls]} .$approperties &&"
+            [ "$unpacked_libs" ] && echo "$unpacked_libs &&"
             echo "  [ -f \${P[target-jar]} ] &&"
             echo "    echo \"created: ${P[target-jar]}\" ||"
             echo "    echo \"no compiled classes or manifest, no .jar created\""
