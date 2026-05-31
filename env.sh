@@ -97,6 +97,7 @@ declare -gA P=(
     [docs]="target/javadoc"     # directory the javadoc compiler stores javadocs
     [cov]="target/coverage"                 # directory for jacoco.agent to store coverage files
     [cov-file]="target/coverage/jacoco.exec"    # file created by the jacoco.agent
+    [cov-xml]="target/jacoco.xml"               # xml report for Coverage Gutters VSCode plugin
     [cov-report]="target/coverage-report"       # output directory for coverage report (HTML)
     # 
     # discovered assets
@@ -433,10 +434,10 @@ function command() {
         ;;
 
     compile)
-        [ -d "${P[res]}" -a ! -f "${P[target-res]}/${P[manifest]}" ] && local addOn=" &&"
+        [ -d "${P[res]}" ] && local addOn=" &&" && [ ! -d "${P[target-res]}" ] && mkdir -p "${P[target-res]}"
         # 
         echo "javac \$(find ${P[src]} -name '*.java') -d ${P[target-cls]}$sp${args[@]}$addOn"
-        [ "$addOn" ] && echo "mkdir -p ${P[target-res]} && cp -R ${P[res]} ${P[target-res]}/.."
+        [ "$addOn" ] && echo "cp -R ${P[res]} ${P[target-res]}/.."
         ;;
 
     compile-tests)
@@ -478,16 +479,21 @@ function command() {
         # coverage agent, see: https://www.jacoco.org/jacoco/trunk/doc/agent.html
         [ -d "${P[cov]}" ] && echo "rm -rf ${P[cov]} &&"
         command run-tests --coverage ${args[@]}
-        echo "&& echo coverage events recorded in: ${P[cov-file]}"
+        # use "\"\'\"" for single-quote, "\'\"\'" for double-quote markings
+        echo "&& echo coverage events recorded in: "\'\"\'"${P[cov-file]}"\'\"\'
         ;;
 
     coverage-report)
         # coverage report generation, see: https://www.jacoco.org/jacoco/trunk/doc/cli.html
+        # invoke: mk coverage report numbers - to produce report only for classes from 'target/classes/numbers'
         echo "java -jar ${P[cov-report-gen]} report ${P[cov-file]} \\"
         echo "  --sourcefiles ${P[src]} \\"
-        echo "  --classfiles ${P[target-cls]} \\"
-        echo "  --html ${P[cov-report]}"    # --csv coverage.cvs, --xml coverage.xml
-        echo "&& echo coverage report created in: ${P[cov-report]}/index.html"
+        [ "$1" ] && echo "  --classfiles ${P[target-cls]}/$1 \\" || echo "  --classfiles ${P[target-cls]} \\"
+        # --xml: create xml report for Coverage Gutters VSCode plugin
+        # --html: create html code coverage report - --csv coverage.cvs
+        echo "  --xml ${P[cov-xml]} --html ${P[cov-report]} \\"
+        # use "\"\'\"" for single-quote, "\'\"\'" for double-quote markings
+        echo "&& echo coverage report created in: "\'\"\'"${P[cov-report]}/index.html"\'\"\'
         ;;
 
     package|jar)
