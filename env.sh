@@ -10,6 +10,7 @@
 #  - JAR_PACKAGE_LIBS           ; libraries to package with jar-file
 #  - JUNIT_CLASSPATH            ; CLASSPATH used by the JUnit test runner
 #  - JUNIT_OPTIONS              ; flags for the JUnit test runner
+#  - LOMBOK_OPTS                ; Java compiler options for lombok (Java > 21)
 #  - JACOCO_AGENT_OPTIONS       ; JVM jacoco agent options (code coverage)
 # \\
 # Project files created for VSCode and eclipse IDE, 'libs' link:
@@ -72,6 +73,7 @@
 declare -gA P=(
     # general assets
     [version]="1.4.0"           # version number
+    [java-version]=""           # Java version number: '25' (major number only)
     [pdir]="."                  # relative path to project directory
     [src]="src/main"            # Java source code, probed for existence
     [tests]="src/tests"         # Java unit tests, probed for existence
@@ -109,7 +111,7 @@ declare -gA P=(
     [jars]=""                   # .jar files found in libs, used by CLASSPATH
     [junit-jars]=""             # .jar files from libs for JUnit testing, used by JUNIT_CLASSPATH
     [junit-runner]=""           # .jar file found in libs for the JUnit test runner
-    [lombok-jar]=""             # .jar for lombok code injection, e.g. 'libs/lombok/lombok-1.18.38.jar'
+    [lombok-jar]=""             # .jar for lombok code injection, e.g. 'libs/lombok/lombok-1.18.44.jar'
     # 
     [script]="${BASH_SOURCE[0]}"    # name of this script file
     [is-zsh]="$is_zsh"          # empty if executing shell is not zsh
@@ -118,6 +120,7 @@ declare -gA P=(
     [ra-opt]="-ra"              # zsh: read -rA arr <<< $str vs. -ra (bash)
     [has-realpath]=$(type realpath 1>/dev/null 2>/dev/null; [ $? -eq 0 ] && echo true)
     [has-cygpath]=$(type cygpath 1>/dev/null 2>/dev/null; [ $? -eq 0 ] && echo true)
+    [lombok-supress-warning]="--sun-misc-unsafe-memory-access=allow"    # needed for Java > 21
 )
 if [ "$is_zsh" ]; then
     P[script]="./${(%):-%x}"    # obtain name of this script and overwrite P[script]
@@ -142,6 +145,10 @@ function discover_env() {
     # [ $(is_project_directory $p) ] && \
     #     echo "must run in project directory" && \
     #     return 1
+    # 
+    local v1=$(java --version)      # 'java 21 2023-09-19 LTS', 'openjdk 21.0.11 2026-04-21'
+    local v2=${v1#*[[:space:]]}     # remove everything before first space: '21.0.1'
+    P[java-version]=${v2%%[[:space:].]*}    # remove everything after the first space or dot: '21'
     # 
     for p in ${P[script-path]} ${P[script-path]}/.. ; do
         [ $(is_project_directory $p) ] && P[pdir]="$(realpath_ --relative-to=. $p)" && break
@@ -258,6 +265,23 @@ function configure_env() {
         [ "${P[module]}" ] && javac_opts+=" -Xlint:-module --module-path \"$MODULEPATH\""
         # 
         export JDK_JAVAC_OPTIONS="$javac_opts"; created_vars+=(JDK_JAVAC_OPTIONS)
+    fi
+    if [ -z "$LOMBOK_OPTS" -a "${P[lombok-jar]}" -a "${P[java-version]}" -gt 21 ]; then
+        # must open internal compiler-packages for lombok-processing and use '-proc:full' to  make
+        # lombok work with JDK > 21; '-J--sun-misc-unsafe-memory-access=allow' suppresses warnings
+        export LOMBOK_OPTS="
+            -proc:full
+            -J--add-opens=jdk.compiler/com.sun.tools.javac.code=ALL-UNNAMED
+            -J--add-opens=jdk.compiler/com.sun.tools.javac.comp=ALL-UNNAMED
+            -J--add-opens=jdk.compiler/com.sun.tools.javac.file=ALL-UNNAMED
+            -J--add-opens=jdk.compiler/com.sun.tools.javac.main=ALL-UNNAMED
+            -J--add-opens=jdk.compiler/com.sun.tools.javac.model=ALL-UNNAMED
+            -J--add-opens=jdk.compiler/com.sun.tools.javac.parser=ALL-UNNAMED
+            -J--add-opens=jdk.compiler/com.sun.tools.javac.processing=ALL-UNNAMED
+            -J--add-opens=jdk.compiler/com.sun.tools.javac.tree=ALL-UNNAMED
+            -J--add-opens=jdk.compiler/com.sun.tools.javac.util=ALL-UNNAMED
+            -processorpath ${P[lombok-jar]} -J${P[lombok-supress-warning]}"
+        created_vars+=(LOMBOK_OPTS)
     fi
     if [ -z "$JDK_JAVADOC_OPTIONS" ]; then
         local javadoc_opts=""
@@ -385,6 +409,7 @@ function parse_args() {
         echo "- MODULEPATH:;$MODULEPATH" | sed -e 's/;/\n  + /g'; echo
         # echo "- JUNIT_OPTIONS: $JUNIT_OPTIONS"; echo
         echo "- JDK_JAVAC_OPTIONS: $JDK_JAVAC_OPTIONS"; echo
+        echo "- LOMBOK_OPTS: $LOMBOK_OPTS"; echo
         echo "- JDK_JAVADOC_OPTIONS: $JDK_JAVADOC_OPTIONS"; echo
         echo "- JAR_PACKAGE_LIBS: $JAR_PACKAGE_LIBS"
     fi
@@ -435,14 +460,16 @@ function command() {
 
     compile)
         [ -d "${P[res]}" ] && local addOn=" &&" && [ ! -d "${P[target-res]}" ] && mkdir -p "${P[target-res]}"
+        [ "$LOMBOK_OPTS" ] && local lombok_opts="\$LOMBOK_OPTS "
         # 
-        echo "javac \$(find ${P[src]} -name '*.java') -d ${P[target-cls]}$sp${args[@]}$addOn"
+        echo "javac $lombok_opts\$(find ${P[src]} -name '*.java') -d ${P[target-cls]}$sp${args[@]}$addOn"
         [ "$addOn" ] && echo "cp -R ${P[res]} ${P[target-res]}/.."
         ;;
 
     compile-tests)
+        [ "$LOMBOK_OPTS" ] && local lombok_opts="\$LOMBOK_OPTS "
         [ -d "${P[tests]}" ] &&
-            echo "javac -cp \$JUNIT_CLASSPATH \$(find ${P[tests]} -name '*.java') \\" &&
+            echo "javac -cp \$JUNIT_CLASSPATH $lombok_opts\$(find ${P[tests]} -name '*.java') \\" &&
             echo "  -d ${P[target-tests]} ${args[@]}" ||
             echo "echo no tests present"
         ;;
@@ -549,7 +576,10 @@ function command() {
                 local moduleinfo="${P[module-info]}" &&
                 echo "mv $moduleinfo $moduleinfo.BAK &&" &&
             # 
-            echo "java -jar ${P[lombok-jar]} delombok \\"
+            [ -z "$LOMBOK_OPTS" ] &&
+                echo "java -jar ${P[lombok-jar]} delombok \\" || {
+                echo "java ${P[lombok-supress-warning]} \\"; echo "  -jar ${P[lombok-jar]} delombok \\"
+            }
             echo "  ${P[src]} -d ${P[delombok]} --format=pretty --encoding=\"UTF-8\" \\"
             [ "${P[module]}" ] && echo "  --module-path=\"\$MODULEPATH\" \\"
             echo "  --classpath=\"\$CLASSPATH\" 2>&1 | head -30 >/dev/tty;"
@@ -697,7 +727,8 @@ if ! typeset -f wipe >/dev/null; then
         esac; done
         # 
         local wipe_vars=( \
-            CLASSPATH MODULEPATH JUNIT_CLASSPATH JUNIT_OPTIONS JDK_JAVAC_OPTIONS \
+            CLASSPATH MODULEPATH JUNIT_CLASSPATH JUNIT_OPTIONS \
+            JDK_JAVAC_OPTIONS LOMBOK_OPTS \
             JDK_JAVADOC_OPTIONS JAR_PACKAGE_LIBS JACOCO_AGENT_OPTIONS \
         )
         local wipe_files=(.classpath .project .vscode/launch-coderunner)
